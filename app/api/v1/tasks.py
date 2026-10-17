@@ -27,6 +27,7 @@ from app.core.exceptions import (
 )
 from app.schemas.task_schemas import (
     AcknowledgeRequest,
+    AssignRequest,
     CompleteRequest,
     HumanTaskDetailResponse,
     HumanTaskResponse,
@@ -227,10 +228,33 @@ def reopen_task(
 
 
 @router.post(
+    "/tasks/{task_id}/assign",
+    response_model=HumanTaskResponse,
+    summary="Assign a task (CREATED -> ASSIGNED)",
+    description="Assigns a task currently in CREATED status to an eligible employee.",
+)
+def assign_task(
+    task_id: str,
+    body: AssignRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+):
+    task = task_service.assign_task(
+        db,
+        task_id,
+        actor_id=body.actor_id,
+        assignee_id=body.assignee_id,
+        reason=body.reason,
+        idempotency_key=idempotency_key,
+    )
+    return _task_to_response(task)
+
+
+@router.post(
     "/tasks/{task_id}/reassign",
     response_model=HumanTaskResponse,
     summary="Reassign task to a different employee",
-    description="Permitted from ASSIGNED, ACKNOWLEDGED, or IN_PROGRESS states.",
+    description="Permitted from ASSIGNED, ACKNOWLEDGED, or IN_PROGRESS states (and CREATED).",
 )
 def reassign_task(
     task_id: str,

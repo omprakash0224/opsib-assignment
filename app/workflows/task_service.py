@@ -25,11 +25,13 @@ from app.core.exceptions import (
     InvalidStateTransitionError,
     IdempotencyConflictError,
     ResourceNotFoundError,
+    IneligibleAssigneeError,
 )
 from app.db.models.task import HumanTask
 from app.db.models.audit import TaskAuditEvent
+from app.db.models.canonical import Employee
 from app.db.models.exception import OperationalException
-from app.routing.policy import RoutingPolicy
+from app.routing.policy import RoutingPolicy, check_assignable
 from app.workflows import audit_service
 from app.workflows.state_machine import (
     assert_transition,
@@ -288,6 +290,66 @@ def submit_for_verification(
     return task
 
 
+def assign_task(
+    session: Session,
+    task_id: str,
+    actor_id: str,
+    assignee_id: str,
+    reason: str,
+    idempotency_key: Optional[str] = None,
+) -> HumanTask:
+    """
+    Assign a task from CREATED to ASSIGNED.
+    Validates assignee eligibility and mandatory reason.
+    """
+    if not reason or not reason.strip():
+        raise IneligibleAssigneeError("Assignment reason is required and cannot be empty.")
+
+    task = _get_task_or_404(session, task_id)
+    if task.status == "ASSIGNED" and task.assignee_id == assignee_id:
+        logger.info(f"[TASK] Idempotent assign retry for task {task_id} with assignee {assignee_id}.")
+        return task
+
+    assert_transition(task.status, "ASSIGNED")
+
+    # Look up employee first
+    emp = session.query(Employee).filter_by(employee_id=assignee_id).first()
+    if not emp:
+        raise ResourceNotFoundError(f"Employee '{assignee_id}' not found.")
+
+    is_eligible, reject_reason, _ = check_assignable(
+        session, emp, location_id=task.canonical_location_id
+    )
+    if not is_eligible:
+        raise IneligibleAssigneeError(
+            f"Employee '{assignee_id}' is ineligible for task '{task_id}': {reject_reason}",
+            details={"employee_id": assignee_id, "task_id": task_id, "reason": reject_reason},
+        )
+
+    prev_status = task.status
+    task.assignee_id = assignee_id
+    task.assignment_reason = reason
+    if idempotency_key:
+        task.idempotency_key = idempotency_key
+
+    _apply_transition(
+        session,
+        task,
+        "ASSIGNED",
+        "ASSIGNED",
+        actor_id,
+        from_status=prev_status,
+        reason=reason,
+        payload={
+            "assignee_id": assignee_id,
+            "actor_id": actor_id,
+            "reason": reason,
+            "idempotency_key": idempotency_key,
+        },
+    )
+    return task
+
+
 def reassign_task(
     session: Session,
     task_id: str,
@@ -300,13 +362,43 @@ def reassign_task(
     Reassign a task to a different employee.
 
     Permitted from: ASSIGNED, ACKNOWLEDGED, IN_PROGRESS (PLAN.md §5.2).
+    If called on a CREATED task, delegates to assign_task.
     Task lands in ASSIGNED with the new assignee.
     """
+    if not reason or not reason.strip():
+        raise IneligibleAssigneeError("Reassignment reason is required and cannot be empty.")
+
     task = _get_task_or_404(session, task_id)
+
+    if task.status == "CREATED":
+        return assign_task(
+            session=session,
+            task_id=task_id,
+            actor_id=actor_id,
+            assignee_id=new_assignee_id,
+            reason=reason,
+            idempotency_key=idempotency_key,
+        )
+
+    assert_reassignable(task.status)
+
+    # Look up employee first
+    emp = session.query(Employee).filter_by(employee_id=new_assignee_id).first()
+    if not emp:
+        raise ResourceNotFoundError(f"Employee '{new_assignee_id}' not found.")
+
+    is_eligible, reject_reason, _ = check_assignable(
+        session, emp, location_id=task.canonical_location_id
+    )
+    if not is_eligible:
+        raise IneligibleAssigneeError(
+            f"Employee '{new_assignee_id}' is ineligible for task '{task_id}': {reject_reason}",
+            details={"employee_id": new_assignee_id, "task_id": task_id, "reason": reject_reason},
+        )
+
     if task.status == "ASSIGNED" and task.assignee_id == new_assignee_id:
         logger.info(f"[TASK] Idempotent reassign retry for task {task_id} with assignee {new_assignee_id}.")
         return task
-    assert_reassignable(task.status)
 
     prev_status = task.status
     prev_assignee = task.assignee_id

@@ -836,5 +836,63 @@ WHY IT WAS DONE:
   while maintaining idempotent deduplication and clean data quality anomaly lifecycles.
 
 
+[2026-10-18 00:38:00 +05:30] - STEP 16: RESOLUTION OF BUG 3 (ASSIGNMENT VALIDATION & MANUAL-QUEUE ASSIGNMENT)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Reproduced Bug 3 by writing failing tests in tests/test_task_lifecycle.py per FIX.md ground rules:
+   - Created TestBug3AssignmentValidationAndManualQueue with 7 test scenarios:
+     * test_reassign_to_inactive_employee_rejected_422: verified reassigning to inactive HR-103 returns 422.
+       (Observed failure on unpatched code: returned 200).
+     * test_reassign_to_off_shift_employee_rejected_422: verified reassigning to off-shift HR-101 returns 422.
+       (Observed failure on unpatched code: returned 200).
+     * test_reassign_to_unknown_employee_returns_404_or_422_never_500: verified non-existent assignee returns 404/422,
+       never an unhandled 500 database integrity error. (Observed failure on unpatched code: returned 500).
+     * test_reassign_to_wrong_location_employee_rejected_422: verified reassigning STORE-014 task to STORE-015 manager
+       HR-401 returns 422 with location rejection details. (Observed failure on unpatched code: returned 200).
+     * test_manual_queue_assign_flow: verified unassigned CREATED task at STORE-015 can be assigned to regional
+       specialist HR-501 via POST /tasks/{id}/assign, transitioning CREATED -> ASSIGNED with full audit trail.
+       (Observed failure on unpatched code: POST /tasks/{id}/assign endpoint was 404 Not Found).
+     * test_reassign_from_created_delegates_to_assign: verified calling POST /tasks/{id}/reassign on a CREATED task
+       succeeds by treating it as an assignment.
+     * test_audit_history_preserves_previous_assignee: verified previous_assignee_id and new_assignee_id are preserved
+       in the audit payload.
+2. Implemented Domain Exception & Global Handlers:
+   - In app/core/exceptions.py: defined IneligibleAssigneeError(OPSIBException).
+   - In app/main.py: registered exception handlers for IneligibleAssigneeError -> 422 Unprocessable Entity
+     and SQLAlchemy IntegrityError -> 422 Unprocessable Entity, guaranteeing database constraints never surface as 500.
+3. Extracted Unified Reusable Eligibility Checker (app/routing/policy.py):
+   - Implemented check_assignable(session, employee_or_id, location_id, at_time):
+     * Evaluates employee existence, active HRMS employment status (HR-103 hard gate), location/region matching
+       (direct store location match or regional specialist covering the store's region), and latest workforce shift
+       availability (ON_SHIFT requirement).
+     * Returns (is_eligible: bool, reason: str, employee: Optional[Employee]).
+   - Refactored _is_eligible in app/routing/policy.py to delegate to check_assignable.
+   - Refactored find_fallback_manager in app/routing/fallback.py to delegate to check_assignable, eliminating
+     duplicated eligibility checking logic across routing modules.
+   - Exported check_assignable in app/routing/__init__.py.
+4. Added Schemas, Task Service Operations & REST Endpoints:
+   - In app/schemas/task_schemas.py: added AssignRequest(actor_id, assignee_id, reason).
+   - In app/workflows/task_service.py:
+     * Implemented assign_task(session, task_id, actor_id, assignee_id, reason, idempotency_key=None): validates
+       non-empty reason, looks up employee (raising ResourceNotFoundError 404 if missing), validates eligibility via
+       check_assignable (raising IneligibleAssigneeError 422 if ineligible), transitions CREATED -> ASSIGNED, and records
+       audit event.
+     * Updated reassign_task: if task.status == "CREATED", delegates to assign_task. Validates employee existence (404)
+       and eligibility via check_assignable (422) before applying reassignment.
+   - In app/api/v1/tasks.py: exposed POST /tasks/{task_id}/assign with AssignRequest schema.
+   - Updated existing lifecycle tests that previously performed cross-store reassignments to use eligible store manager
+     HR-201.
+5. Executed Automated Verification:
+   - tests/test_task_lifecycle.py (42/42 tests passing).
+   - Full test suite: 147/147 PASSED across all 10 test modules in 7.10s.
+   - scripts/run_verification.py: ALL SCENARIOS & OPERATIONAL INVARIANTS PASSED.
+
+WHY IT WAS DONE:
+- Resolves Bug 3 from FIX.md: guarantees that no code path can assign or reassign a task to an employee who fails
+  eligibility rules (inactive, off-shift, wrong location, or non-existent), provides a first-class assignment endpoint
+  for the manual unassigned queue (CREATED -> ASSIGNED), allows reassignments from CREATED, and replaces duplicated
+  routing gate checks with a unified, DRY check_assignable engine.
+
+
 
 

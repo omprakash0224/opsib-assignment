@@ -53,3 +53,8 @@ class AIProviderError(OPSIBException):
     """Raised when an external AI provider (e.g. OpenRouter) fails or times out."""
     pass
 
+
+class IneligibleAssigneeError(OPSIBException):
+    """Raised when an employee is ineligible for task assignment or reassignment."""
+    pass
+

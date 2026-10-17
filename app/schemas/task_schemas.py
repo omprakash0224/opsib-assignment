@@ -84,6 +84,13 @@ class CompleteRequest(BaseModel):
     resolution_notes: Optional[str] = Field(None, description="Free-text resolution notes")
 
 
+class AssignRequest(BaseModel):
+    """Request body for POST /tasks/{id}/assign."""
+    actor_id: str = Field(..., description="Employee ID performing the assignment")
+    assignee_id: str = Field(..., description="Employee ID of the assignee")
+    reason: str = Field(..., min_length=1, description="Mandatory reason for assignment")
+
+
 class ReassignRequest(BaseModel):
     """Request body for POST /tasks/{id}/reassign."""
     actor_id: str = Field(..., description="Employee ID performing the reassignment")

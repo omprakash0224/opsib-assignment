@@ -347,18 +347,18 @@ class TestIllegalTransitions:
     def test_reassign_from_assigned(self, db_session: Session):
         """Reassignment from ASSIGNED is permitted; task moves to ASSIGNED with new assignee."""
         task = self._setup_task(db_session)
-        t = task_service.reassign_task(db_session, task.id, "HR-201", "HR-401", "Manager override")
+        t = task_service.reassign_task(db_session, task.id, "HR-201", "HR-201", "Manager override")
         assert t.status == "ASSIGNED"
-        assert t.assignee_id == "HR-401"
+        assert t.assignee_id == "HR-201"
 
     def test_reassign_from_in_progress(self, db_session: Session):
         """Reassignment from IN_PROGRESS is permitted."""
         task = self._setup_task(db_session)
         task_service.acknowledge_task(db_session, task.id, "HR-102")
         task_service.start_task(db_session, task.id, "HR-102")
-        t = task_service.reassign_task(db_session, task.id, "HR-201", "HR-401", "Shift change")
+        t = task_service.reassign_task(db_session, task.id, "HR-201", "HR-201", "Shift change")
         assert t.status == "ASSIGNED"
-        assert t.assignee_id == "HR-401"
+        assert t.assignee_id == "HR-201"
 
 
 # ---------------------------------------------------------------------------
@@ -531,12 +531,12 @@ class TestTaskAPI:
 
         r = client.post(f"/api/v1/tasks/{tid}/reassign", json={
             "actor_id": "HR-201",
-            "new_assignee_id": "HR-401",
+            "new_assignee_id": "HR-201",
             "reason": "HR-102 is now unavailable",
         })
         assert r.status_code == 200
         data = r.json()
-        assert data["assignee_id"] == "HR-401"
+        assert data["assignee_id"] == "HR-201"
         assert data["status"] == "ASSIGNED"
 
     def test_api_task_detail_includes_audit_events(self, client):
@@ -702,4 +702,240 @@ class TestBug1VerifyExceptionResolutionPersistence:
                 fresh_session.close()
         finally:
             db.close()
+
+
+# ---------------------------------------------------------------------------
+# Bug 3 Tests: Assignment Validation and Manual-Queue Assignment
+# ---------------------------------------------------------------------------
+
+class TestBug3AssignmentValidationAndManualQueue:
+    """
+    Bug 3 Verification:
+    - Reassign to inactive HR-103 returns 422.
+    - Reassign to off-shift HR-101 returns 422.
+    - Reassign to unknown ID returns 404 or 422 (never 500).
+    - Reassign to wrong-location employee returns 422.
+    - Manual-queue flow: STORE-015 with no eligible person creates CREATED task,
+      assigned via POST /tasks/{id}/assign, reaches ASSIGNED with audit event.
+    - Reassign from CREATED is allowed and treated as an assign.
+    - Audit history preserves previous assignee after reassign.
+    """
+
+    def _setup_fixtures(self, client):
+        for ds in [
+            "product_aliases", "location_aliases", "employees",
+            "workforce_status", "purchase_order_lines", "goods_receipt_lines",
+        ]:
+            client.post(
+                f"/api/v1/imports/{ds}",
+                content=open(os.path.join(WORKSPACE_DIR, f"{ds}.csv"), encoding="utf-8").read(),
+                headers={"Content-Type": "text/csv"},
+            )
+        client.post("/api/v1/reconciliation/run")
+
+    def test_reassign_to_inactive_employee_rejected_422(self, client):
+        """Reassigning to inactive HR-103 must be rejected with 422 Unprocessable Entity."""
+        self._setup_fixtures(client)
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        task_store14 = next(t for t in tasks if t["canonical_location_id"] == "STORE-014")
+
+        r = client.post(f"/api/v1/tasks/{task_store14['id']}/reassign", json={
+            "actor_id": "HR-201",
+            "new_assignee_id": "HR-103",
+            "reason": "Test reassignment to inactive",
+        })
+        assert r.status_code == 422
+        assert "INACTIVE" in r.text or "ACTIVE" in r.text
+
+    def test_reassign_to_off_shift_employee_rejected_422(self, client):
+        """Reassigning to active but off-shift HR-101 must be rejected with 422."""
+        self._setup_fixtures(client)
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        task_store14 = next(t for t in tasks if t["canonical_location_id"] == "STORE-014")
+
+        r = client.post(f"/api/v1/tasks/{task_store14['id']}/reassign", json={
+            "actor_id": "HR-201",
+            "new_assignee_id": "HR-101",
+            "reason": "Test reassignment to off shift",
+        })
+        assert r.status_code == 422
+        assert "OFF_SHIFT" in r.text or "ON_SHIFT" in r.text or "shift" in r.text.lower()
+
+    def test_reassign_to_unknown_employee_returns_404_or_422_never_500(self, client):
+        """Reassigning to non-existent employee ID must return 404 or 422, never an unhandled 500."""
+        self._setup_fixtures(client)
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        tid = tasks[0]["id"]
+
+        r = client.post(f"/api/v1/tasks/{tid}/reassign", json={
+            "actor_id": "HR-201",
+            "new_assignee_id": "HR-NONEXISTENT-999",
+            "reason": "Test reassignment to non-existent employee",
+        })
+        assert r.status_code in (404, 422)
+        assert r.status_code != 500
+
+    def test_reassign_to_wrong_location_employee_rejected_422(self, client):
+        """Reassigning a STORE-014 task to STORE-015 manager HR-401 must be rejected with 422."""
+        self._setup_fixtures(client)
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        task_store14 = next(t for t in tasks if t["canonical_location_id"] == "STORE-014")
+
+        r = client.post(f"/api/v1/tasks/{task_store14['id']}/reassign", json={
+            "actor_id": "HR-201",
+            "new_assignee_id": "HR-401",  # Store manager at STORE-015
+            "reason": "Wrong location reassignment",
+        })
+        assert r.status_code == 422
+        assert "location" in r.text.lower() or "STORE" in r.text
+
+    def test_manual_queue_assign_flow(self, client, fresh_db_engine):
+        """
+        Manual-queue flow:
+        - When STORE-015 has no eligible person, task is queued as CREATED / MANUAL_ASSIGNMENT_REQUIRED.
+        - Calling POST /tasks/{id}/assign assigns the task (CREATED -> ASSIGNED).
+        - Audit trail records ASSIGNED event with actor, reason, and assignee.
+        """
+        # Load aliases
+        client.post(
+            "/api/v1/imports/product_aliases",
+            content=read_fixture("product_aliases.csv"),
+            headers={"Content-Type": "text/csv"},
+        )
+        client.post(
+            "/api/v1/imports/location_aliases",
+            content=read_fixture("location_aliases.csv"),
+            headers={"Content-Type": "text/csv"},
+        )
+        # Load employees but make HR-401 inactive so STORE-015 has no eligible candidates
+        emp_csv = read_fixture("employees.csv").replace("HR-401,Rohan Iyer,ACTIVE,", "HR-401,Rohan Iyer,INACTIVE,")
+        client.post(
+            "/api/v1/imports/employees",
+            content=emp_csv,
+            headers={"Content-Type": "text/csv"},
+        )
+        client.post(
+            "/api/v1/imports/workforce_status",
+            content=read_fixture("workforce_status.csv"),
+            headers={"Content-Type": "text/csv"},
+        )
+        client.post(
+            "/api/v1/imports/purchase_order_lines",
+            content=read_fixture("purchase_order_lines.csv"),
+            headers={"Content-Type": "text/csv"},
+        )
+        client.post(
+            "/api/v1/imports/goods_receipt_lines",
+            content=read_fixture("goods_receipt_lines.csv"),
+            headers={"Content-Type": "text/csv"},
+        )
+
+        # Run reconciliation
+        client.post("/api/v1/reconciliation/run")
+
+        # PO-505 is at STORE-015 -> task must be CREATED with MANUAL_ASSIGNMENT_REQUIRED
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        task_store15 = next(t for t in tasks if t["canonical_location_id"] == "STORE-015")
+        assert task_store15["status"] == "CREATED"
+        assert task_store15["assignee_id"] is None
+        assert "MANUAL_ASSIGNMENT_REQUIRED" in task_store15["assignment_reason"]
+        tid = task_store15["id"]
+
+        # Assign via POST /tasks/{id}/assign to regional operations HR-501 (REGION-MH covers STORE-015)
+        assign_resp = client.post(f"/api/v1/tasks/{tid}/assign", json={
+            "actor_id": "HR-201",
+            "assignee_id": "HR-501",
+            "reason": "Supervisor manual allocation to regional specialist",
+        })
+        assert assign_resp.status_code == 200
+        assigned_data = assign_resp.json()
+        assert assigned_data["status"] == "ASSIGNED"
+        assert assigned_data["assignee_id"] == "HR-501"
+
+        # Check audit trail
+        detail = client.get(f"/api/v1/tasks/{tid}").json()
+        events = detail["audit_events"]
+        assert len(events) >= 2
+        assign_event = events[-1]
+        assert assign_event["event_type"] == "ASSIGNED"
+        assert assign_event["from_status"] == "CREATED"
+        assert assign_event["to_status"] == "ASSIGNED"
+        assert assign_event["actor_id"] == "HR-201"
+        assert "Supervisor manual allocation" in assign_event["reason"]
+
+    def test_audit_history_preserves_previous_assignee(self, client):
+        """Audit trail preserves previous assignee after reassignment."""
+        self._setup_fixtures(client)
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        task_store14 = next(t for t in tasks if t["canonical_location_id"] == "STORE-014")
+        tid = task_store14["id"]
+        assert task_store14["assignee_id"] == "HR-102"
+
+        # Reassign to store manager HR-201 (active, on-shift at STORE-014)
+        r = client.post(f"/api/v1/tasks/{tid}/reassign", json={
+            "actor_id": "HR-201",
+            "new_assignee_id": "HR-201",
+            "reason": "Store manager taking over investigation",
+        })
+        assert r.status_code == 200
+
+        detail = client.get(f"/api/v1/tasks/{tid}").json()
+        reassign_events = [e for e in detail["audit_events"] if e["event_type"] == "REASSIGNED"]
+        assert len(reassign_events) >= 1
+        payload = reassign_events[-1]["event_payload"]
+        assert payload["previous_assignee_id"] == "HR-102"
+        assert payload["new_assignee_id"] == "HR-201"
+
+    def test_reassign_from_created_delegates_to_assign(self, client, fresh_db_engine):
+        """Calling POST /tasks/{id}/reassign on a CREATED task delegates to assign_task."""
+        client.post(
+            "/api/v1/imports/product_aliases",
+            content=read_fixture("product_aliases.csv"),
+            headers={"Content-Type": "text/csv"},
+        )
+        client.post(
+            "/api/v1/imports/location_aliases",
+            content=read_fixture("location_aliases.csv"),
+            headers={"Content-Type": "text/csv"},
+        )
+        # Make HR-401 inactive so STORE-015 task is CREATED
+        emp_csv = read_fixture("employees.csv").replace("HR-401,Rohan Iyer,ACTIVE,", "HR-401,Rohan Iyer,INACTIVE,")
+        client.post(
+            "/api/v1/imports/employees",
+            content=emp_csv,
+            headers={"Content-Type": "text/csv"},
+        )
+        client.post(
+            "/api/v1/imports/workforce_status",
+            content=read_fixture("workforce_status.csv"),
+            headers={"Content-Type": "text/csv"},
+        )
+        client.post(
+            "/api/v1/imports/purchase_order_lines",
+            content=read_fixture("purchase_order_lines.csv"),
+            headers={"Content-Type": "text/csv"},
+        )
+        client.post(
+            "/api/v1/imports/goods_receipt_lines",
+            content=read_fixture("goods_receipt_lines.csv"),
+            headers={"Content-Type": "text/csv"},
+        )
+        client.post("/api/v1/reconciliation/run")
+
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        task_store15 = next(t for t in tasks if t["canonical_location_id"] == "STORE-015")
+        assert task_store15["status"] == "CREATED"
+        tid = task_store15["id"]
+
+        # Call reassign on the CREATED task
+        reassign_resp = client.post(f"/api/v1/tasks/{tid}/reassign", json={
+            "actor_id": "HR-201",
+            "new_assignee_id": "HR-501",
+            "reason": "Reassigning CREATED task to regional operations specialist",
+        })
+        assert reassign_resp.status_code == 200
+        assigned_data = reassign_resp.json()
+        assert assigned_data["status"] == "ASSIGNED"
+        assert assigned_data["assignee_id"] == "HR-501"
+
 

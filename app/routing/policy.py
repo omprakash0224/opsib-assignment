@@ -18,11 +18,12 @@ Unassigned queue:
   assignment_reason='MANUAL_ASSIGNMENT_REQUIRED'.
 """
 from dataclasses import dataclass
-from typing import Optional
+from datetime import datetime
+from typing import Optional, Union
 from sqlalchemy.orm import Session
 
 from app.core.logging import logger
-from app.db.models.canonical import Employee, WorkforceShift
+from app.db.models.canonical import Employee, WorkforceShift, LocationAlias
 
 
 # ---------------------------------------------------------------------------
@@ -49,67 +50,121 @@ REASON_MANUAL = "MANUAL_ASSIGNMENT_REQUIRED"
 
 
 # ---------------------------------------------------------------------------
-# Eligibility Helpers
+# Eligibility Evaluation Function (check_assignable)
 # ---------------------------------------------------------------------------
 
-def _get_latest_shift(session: Session, employee_id: str) -> Optional[WorkforceShift]:
+def check_assignable(
+    session: Session,
+    employee_or_id: Union[str, Employee],
+    location_id: Optional[str] = None,
+    at_time: Optional[datetime] = None,
+) -> tuple[bool, str, Optional[Employee]]:
     """
-    Returns the most recent WorkforceShift record for the given employee,
-    ordered by observed_at descending.
+    Unified eligibility evaluator used by routing, fallback, and reassignment/assignment.
+
+    Eligibility Rules:
+      1. Employee must exist in the database.
+      2. employment_status must be 'ACTIVE' (HRMS hard gate).
+      3. Location check:
+         - Direct match: employee.canonical_location_id == location_id.
+         - Regional match: if employee has regional scope (canonical_location_id is None
+           or role == 'regional_operations'), employee.region_id must match the location's region.
+         - Different store location assignment is rejected.
+      4. Shift check:
+         - Latest WorkforceShift (observed_at <= at_time if at_time specified, or latest overall)
+           must show availability_status == 'ON_SHIFT'.
+
+    Returns:
+        (is_eligible: bool, reason: str, employee: Optional[Employee])
     """
-    return (
-        session.query(WorkforceShift)
-        .filter(WorkforceShift.employee_id == employee_id)
-        .order_by(WorkforceShift.observed_at.desc())
-        .first()
+    if isinstance(employee_or_id, Employee):
+        employee = employee_or_id
+    else:
+        employee = session.query(Employee).filter_by(employee_id=employee_or_id).first()
+
+    if employee is None:
+        return False, f"Employee '{employee_or_id}' not found", None
+
+    # Gate 1: HRMS employment_status == 'ACTIVE'
+    if employee.employment_status != "ACTIVE":
+        return (
+            False,
+            f"employment_status={employee.employment_status} (must be ACTIVE)",
+            employee,
+        )
+
+    # Gate 2: Location / Region matching
+    if location_id:
+        if employee.canonical_location_id == location_id:
+            pass  # Direct store location match
+        elif employee.canonical_location_id is None or employee.role == "regional_operations":
+            loc_alias = (
+                session.query(LocationAlias)
+                .filter_by(canonical_location_id=location_id)
+                .first()
+            )
+            loc_region = loc_alias.region_id if loc_alias else None
+            if not loc_region or employee.region_id != loc_region:
+                return (
+                    False,
+                    f"Employee region '{employee.region_id}' does not match location '{location_id}' region '{loc_region}'",
+                    employee,
+                )
+        else:
+            return (
+                False,
+                f"Employee location '{employee.canonical_location_id}' does not match task location '{location_id}'",
+                employee,
+            )
+
+    # Gate 3: Shift availability
+    shift_query = session.query(WorkforceShift).filter(
+        WorkforceShift.employee_id == employee.employee_id
     )
+    if at_time is not None:
+        shift_query = shift_query.filter(WorkforceShift.observed_at <= at_time)
+
+    shift = shift_query.order_by(WorkforceShift.observed_at.desc()).first()
+
+    if shift is None:
+        return (
+            False,
+            f"No workforce shift record found for employee '{employee.employee_id}'",
+            employee,
+        )
+
+    if shift.availability_status != "ON_SHIFT":
+        return (
+            False,
+            f"availability_status={shift.availability_status} (must be ON_SHIFT)",
+            employee,
+        )
+
+    return True, "Active, on-shift, and location/region eligible", employee
 
 
 def _is_eligible(
     session: Session,
     employee: Employee,
     eligibility_log: list,
+    location_id: Optional[str] = None,
 ) -> bool:
     """
-    Applies the two-gate eligibility check:
-      Gate 1: HRMS employment_status == 'ACTIVE'  (hard gate; wins over shift data).
-      Gate 2: Latest workforce shift availability_status == 'ON_SHIFT'.
+    Applies unified eligibility checks via check_assignable.
     """
-    # Gate 1: HR status
-    if employee.employment_status != "ACTIVE":
+    is_ok, reason, _ = check_assignable(session, employee, location_id=location_id)
+    if not is_ok:
         eligibility_log.append({
             "employee_id": employee.employee_id,
-            "rejected_reason": f"employment_status is '{employee.employment_status}' (not ACTIVE)",
+            "rejected_reason": reason,
         })
-        logger.info(
-            f"[ROUTING] {employee.employee_id} REJECTED: employment_status={employee.employment_status}"
-        )
-        return False
-
-    # Gate 2: Shift status
-    shift = _get_latest_shift(session, employee.employee_id)
-    if shift is None:
-        eligibility_log.append({
-            "employee_id": employee.employee_id,
-            "rejected_reason": "No shift record found",
-        })
-        logger.info(f"[ROUTING] {employee.employee_id} REJECTED: no shift record")
-        return False
-
-    if shift.availability_status != "ON_SHIFT":
-        eligibility_log.append({
-            "employee_id": employee.employee_id,
-            "rejected_reason": f"availability_status is '{shift.availability_status}' (not ON_SHIFT)",
-        })
-        logger.info(
-            f"[ROUTING] {employee.employee_id} REJECTED: availability_status={shift.availability_status}"
-        )
+        logger.info(f"[ROUTING] {employee.employee_id} REJECTED: {reason}")
         return False
 
     eligibility_log.append({
         "employee_id": employee.employee_id,
         "selected": True,
-        "reason": "Active and ON_SHIFT",
+        "reason": reason,
     })
     return True
 
@@ -154,7 +209,7 @@ class RoutingPolicy:
 
         selected_candidate = None
         for candidate in primary_candidates:
-            if _is_eligible(session, candidate, eligibility_log):
+            if _is_eligible(session, candidate, eligibility_log, location_id=canonical_location_id):
                 if selected_candidate is None:
                     selected_candidate = candidate
 

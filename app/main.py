@@ -16,7 +16,9 @@ from app.core.exceptions import (
     IdempotencyConflictError,
     ResourceNotFoundError,
     AIProviderError,
+    IneligibleAssigneeError,
 )
+from sqlalchemy.exc import IntegrityError
 from app.schemas.common_schemas import ErrorResponse
 
 
@@ -121,6 +123,30 @@ async def data_quality_error_handler(request: Request, exc: DataQualityError):
             error_code="DATA_QUALITY_ERROR",
             message=exc.message,
             details=exc.details,
+        ).model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(IneligibleAssigneeError)
+async def ineligible_assignee_handler(request: Request, exc: IneligibleAssigneeError):
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content=ErrorResponse(
+            error_code="INELIGIBLE_ASSIGNEE",
+            message=exc.message,
+            details=exc.details,
+        ).model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(request: Request, exc: IntegrityError):
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content=ErrorResponse(
+            error_code="DATABASE_INTEGRITY_ERROR",
+            message="Database integrity or foreign key constraint violation.",
+            details={"orig": str(exc.orig) if hasattr(exc, "orig") else str(exc)},
         ).model_dump(mode="json"),
     )
 
