@@ -766,3 +766,40 @@ ALL PHASES (1 THROUGH 9) COMPLETE. ASSESSMENT SUBMISSION READY.
 ================================================================================
 
 
+[2026-10-18 00:15:00 +05:30] - STEP 14: RESOLUTION OF BUG 1 (VERIFY EXCEPTION RESOLUTION PERSISTENCE & ATOMICITY)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Reproduced Bug 1 by writing failing tests per FIX.md ground rules:
+   - Created fresh_db_engine and fresh_client fixtures in tests/conftest.py utilizing SQLite
+     StaticPool to ensure each HTTP request runs in an isolated DB session that closes and discards
+     uncommitted flushes upon completion (replicating production FastAPI get_db dependency behavior).
+   - Created TestBug1VerifyExceptionResolutionPersistence in tests/test_task_lifecycle.py:
+     * test_fresh_session_api_verify_persists_exception_resolution: exercised full lifecycle through
+       POST /verify and asserted GET /exceptions/{id} in a fresh session returns RESOLVED with resolved_at set.
+       Observed failure on original code: exception returned DETECTED because _apply_transition committed
+       before _resolve_exception was called, and _resolve_exception only flushed without committing.
+     * test_verify_atomicity_failure_does_not_half_apply: simulated database/exception failure during
+       resolution and verified task does not remain in VERIFIED state. Observed failure on original code:
+       task remained half-applied as VERIFIED while exception remained DETECTED.
+2. Refactored Transition Engine & Atomic Commit (app/workflows/task_service.py):
+   - Implemented _stage_transition(): stages HumanTask status changes, timestamps, flushes, and logs
+     TaskAuditEvent without committing.
+   - Refactored _apply_transition(): accepts optional after_flush callback, invokes _stage_transition,
+     executes the after_flush hook, and executes a single atomic session.commit() inside a try-except
+     block that guarantees session.rollback() on any error.
+   - Refactored verify_task(): passed after_flush=lambda: _resolve_exception(session, task.exception_id, actor_id)
+     into _apply_transition, eliminating post-commit mutations and ensuring task state transition,
+     audit event recording, and OperationalException resolution are persisted in a single atomic transaction.
+   - Added try-except-rollback semantics to create_task_for_exception() to protect task provisioning.
+3. Executed Automated Verification:
+   - tests/test_task_lifecycle.py (including both new Bug 1 tests): 35/35 PASSED.
+   - Full test suite: 138/138 PASSED across all 10 test modules in 4.49s.
+   - scripts/run_verification.py: ALL SCENARIOS & OPERATIONAL INVARIANTS PASSED.
+
+WHY IT WAS DONE:
+- Resolves Bug 1 from FIX.md: guarantees that completing verification atomically persists the RESOLVED status
+  and timestamp on the linked OperationalException across request boundaries, eliminating partial-state bugs
+  and ensuring tasks and exceptions can never disagree.
+
+
+

@@ -572,3 +572,134 @@ class TestTaskAPI:
         """GET /tasks/{unknown_id} must return 404."""
         r = client.get("/api/v1/tasks/00000000-0000-0000-0000-000000000000")
         assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Bug 1 Tests: Exception Resolution Persistence and Atomicity
+# ---------------------------------------------------------------------------
+
+class TestBug1VerifyExceptionResolutionPersistence:
+    """
+    Bug 1 Verification:
+    - Fresh-session API test: complete full lifecycle via HTTP, then GET /exceptions/{id}
+      in a fresh session and assert status == RESOLVED and resolved_at is set.
+    - Atomicity test: force _resolve_exception to raise, and assert the task is still
+      PENDING_VERIFICATION (nothing half-applied, no audit event committed).
+    """
+
+    def _setup_fresh_fixtures(self, fresh_client):
+        for ds in [
+            "product_aliases", "location_aliases", "employees",
+            "workforce_status", "purchase_order_lines", "goods_receipt_lines",
+        ]:
+            resp = fresh_client.post(
+                f"/api/v1/imports/{ds}",
+                content=open(os.path.join(WORKSPACE_DIR, f"{ds}.csv"), encoding="utf-8").read(),
+                headers={"Content-Type": "text/csv"},
+            )
+            assert resp.status_code == 201
+        recon = fresh_client.post("/api/v1/reconciliation/run")
+        assert recon.status_code == 200
+
+    def test_fresh_session_api_verify_persists_exception_resolution(self, fresh_client):
+        """
+        Verify must persist exception resolution across fresh DB sessions.
+        Full HTTP lifecycle completed, then a fresh GET /exceptions/{id} request
+        must return RESOLVED and resolved_at set.
+        """
+        self._setup_fresh_fixtures(fresh_client)
+
+        # Get task for PO-501
+        tasks = fresh_client.get("/api/v1/tasks").json()["items"]
+        task = next(t for t in tasks if t["assignee_id"] == "HR-102")
+        tid = task["id"]
+        exception_id = task["exception_id"]
+
+        # Initial check on exception in a fresh session: should be DETECTED
+        init_exc = fresh_client.get(f"/api/v1/exceptions/{exception_id}").json()
+        assert init_exc["status"] == "DETECTED"
+        assert init_exc["resolved_at"] is None
+
+        # Advance through lifecycle: ASSIGNED -> ACK -> IN_PROGRESS -> COMPLETED -> PENDING_VERIFICATION -> VERIFIED
+        assert fresh_client.post(f"/api/v1/tasks/{tid}/acknowledge", json={"actor_id": "HR-102"}).status_code == 200
+        assert fresh_client.post(f"/api/v1/tasks/{tid}/start", json={"actor_id": "HR-102"}).status_code == 200
+        assert fresh_client.post(f"/api/v1/tasks/{tid}/complete", json={
+            "actor_id": "HR-102",
+            "resolution_code": "SUPPLIER_SHORT_SHIPMENT_CONFIRMED",
+            "resolution_evidence_ref": "REF-PO501",
+        }).status_code == 200
+        assert fresh_client.post(f"/api/v1/tasks/{tid}/submit-verification", json={"actor_id": "HR-102"}).status_code == 200
+        verify_resp = fresh_client.post(f"/api/v1/tasks/{tid}/verify", json={
+            "actor_id": "HR-201",
+            "notes": "Verified by manager",
+        })
+        assert verify_resp.status_code == 200
+        assert verify_resp.json()["status"] == "VERIFIED"
+
+        # Fresh request to GET /exceptions/{id}
+        exc_resp = fresh_client.get(f"/api/v1/exceptions/{exception_id}")
+        assert exc_resp.status_code == 200
+        exc_data = exc_resp.json()
+        assert exc_data["status"] == "RESOLVED"
+        assert exc_data["resolved_at"] is not None
+
+    def test_verify_atomicity_failure_does_not_half_apply(self, fresh_db_engine, monkeypatch):
+        """
+        Atomicity test: force _resolve_exception to raise, and assert the task is still
+        PENDING_VERIFICATION (nothing half-applied, task and exception cannot disagree).
+        """
+        from sqlalchemy.orm import sessionmaker
+        SessionTest = sessionmaker(bind=fresh_db_engine, expire_on_commit=False)
+        db = SessionTest()
+        try:
+            load_all_fixtures(db)
+            exc = run_detection_and_get_exception(db, "PO-501")
+            task = task_service.create_task_for_exception(db, exc)
+            tid = task.id
+
+            # Advance to PENDING_VERIFICATION
+            task_service.acknowledge_task(db, tid, actor_id="HR-102")
+            task_service.start_task(db, tid, actor_id="HR-102")
+            task_service.complete_task(
+                db, tid, actor_id="HR-102",
+                resolution_code="CODE-1", resolution_evidence_ref="REF-1",
+            )
+            task_service.submit_for_verification(db, tid, actor_id="HR-102")
+
+            # Confirm task is PENDING_VERIFICATION before verify
+            task_before = db.get(HumanTask, tid)
+            assert task_before.status == "PENDING_VERIFICATION"
+
+            # Mock _resolve_exception to fail
+            def mock_resolve_exception_failure(session, exception_id, actor_id):
+                raise RuntimeError("Simulated failure during exception resolution")
+
+            monkeypatch.setattr(task_service, "_resolve_exception", mock_resolve_exception_failure)
+
+            # Call verify_task and expect RuntimeError
+            with pytest.raises(RuntimeError, match="Simulated failure"):
+                task_service.verify_task(db, tid, actor_id="HR-201")
+
+            # Verify atomicity in a fresh session: Task must NOT be VERIFIED! It must remain PENDING_VERIFICATION!
+            fresh_session = SessionTest()
+            try:
+                task_after = fresh_session.get(HumanTask, tid)
+                assert task_after is not None
+                assert task_after.status == "PENDING_VERIFICATION", (
+                    f"Expected task status to remain PENDING_VERIFICATION on exception failure, but got {task_after.status}"
+                )
+
+                # No VERIFIED audit event should have been committed
+                events = fresh_session.query(TaskAuditEvent).filter_by(task_id=tid).all()
+                event_types = [e.event_type for e in events]
+                assert "VERIFIED" not in event_types, "VERIFIED audit event must not be committed on failure"
+
+                # OperationalException must remain DETECTED
+                exc_after = fresh_session.get(OperationalException, exc.id)
+                assert exc_after.status == "DETECTED"
+                assert exc_after.resolved_at is None
+            finally:
+                fresh_session.close()
+        finally:
+            db.close()
+

@@ -16,7 +16,7 @@ Idempotency (ADR-5):
     of raising a 409 Conflict.
 """
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import Callable, List, Optional
 from sqlalchemy.orm import Session
 
 from app.config import DEFAULT_TENANT_ID
@@ -96,26 +96,31 @@ def create_task_for_exception(
         canonical_location_id=exception.canonical_location_id,
         due_at=due_at,
     )
-    session.add(task)
-    session.flush()
+    try:
+        session.add(task)
+        session.flush()
 
-    event_type = "ASSIGNED" if decision.assignee_id else "CREATED"
-    audit_service.record_event(
-        session=session,
-        task_id=task.id,
-        event_type=event_type,
-        to_status=initial_status,
-        actor_id=actor_id,
-        from_status=None,
-        reason=decision.assignment_reason,
-        payload={
-            "exception_id": exception.id,
-            "assignee_id": decision.assignee_id,
-            "eligibility_log": decision.eligibility_log,
-        },
-    )
+        event_type = "ASSIGNED" if decision.assignee_id else "CREATED"
+        audit_service.record_event(
+            session=session,
+            task_id=task.id,
+            event_type=event_type,
+            to_status=initial_status,
+            actor_id=actor_id,
+            from_status=None,
+            reason=decision.assignment_reason,
+            payload={
+                "exception_id": exception.id,
+                "assignee_id": decision.assignee_id,
+                "eligibility_log": decision.eligibility_log,
+            },
+        )
 
-    session.commit()
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
     logger.info(
         f"[TASK] Created task {task.id} for exception {exception.id}: "
         f"status={initial_status}, assignee={decision.assignee_id}, "
@@ -238,11 +243,14 @@ def verify_task(
     if idempotency_key:
         task.idempotency_key = idempotency_key
     _apply_transition(
-        session, task, "VERIFIED", "VERIFIED", actor_id,
+        session,
+        task,
+        "VERIFIED",
+        "VERIFIED",
+        actor_id,
         payload={"notes": notes, "idempotency_key": idempotency_key},
+        after_flush=lambda: _resolve_exception(session, task.exception_id, actor_id),
     )
-    # Mark the linked exception as RESOLVED
-    _resolve_exception(session, task.exception_id, actor_id)
     return task
 
 
@@ -369,7 +377,7 @@ def _get_task_or_404(session: Session, task_id: str) -> HumanTask:
     return task
 
 
-def _apply_transition(
+def _stage_transition(
     session: Session,
     task: HumanTask,
     new_status: str,
@@ -379,7 +387,7 @@ def _apply_transition(
     reason: Optional[str] = None,
     payload: Optional[dict] = None,
 ) -> None:
-    """Apply the status change and write audit event, then commit."""
+    """Stage status change and audit event without committing."""
     prev = from_status or task.status
     task.status = new_status
     task.updated_at = datetime.now(timezone.utc)
@@ -395,7 +403,37 @@ def _apply_transition(
         reason=reason,
         payload=payload,
     )
-    session.commit()
+
+
+def _apply_transition(
+    session: Session,
+    task: HumanTask,
+    new_status: str,
+    event_type: str,
+    actor_id: str,
+    from_status: Optional[str] = None,
+    reason: Optional[str] = None,
+    payload: Optional[dict] = None,
+    after_flush: Optional[Callable[[], None]] = None,
+) -> None:
+    """Apply the status change, audit event, optional hook, and commit atomically."""
+    try:
+        _stage_transition(
+            session=session,
+            task=task,
+            new_status=new_status,
+            event_type=event_type,
+            actor_id=actor_id,
+            from_status=from_status,
+            reason=reason,
+            payload=payload,
+        )
+        if after_flush:
+            after_flush()
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
 
 
 def _resolve_exception(session: Session, exception_id: str, actor_id: str) -> None:
