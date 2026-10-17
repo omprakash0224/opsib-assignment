@@ -162,3 +162,5 @@ class DataQualityIssueResponse(BaseModel):
     issue_type: str
     details: Dict[str, Any]
     created_at: datetime
+    resolved_at: Optional[datetime] = None
+

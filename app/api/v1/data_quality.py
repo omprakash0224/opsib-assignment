@@ -40,6 +40,7 @@ def get_data_quality_issues(
             issue_type=issue.issue_type,
             details=issue.details,
             created_at=issue.created_at,
+            resolved_at=issue.resolved_at,
         )
         for issue in issues
     ]

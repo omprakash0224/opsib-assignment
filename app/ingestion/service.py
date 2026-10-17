@@ -1,6 +1,7 @@
 """
 Ingestion Service: Orchestrates dataset ingestion, deduplication, mapping, and persistence.
 """
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 from app.config import DEFAULT_TENANT_ID
@@ -100,21 +101,18 @@ class IngestionService:
                     continue
                 else:
                     rejected_count += 1
-                    dq_issue = DataQualityIssue(
+                    cls._record_conflicting_duplicate(
+                        session=session,
                         tenant_id=tenant_id,
                         source_system=raw_dict.get("source_system", "UNKNOWN"),
                         dataset_name=dataset_name,
-                        source_record_id=source_id,
-                        issue_type="CONFLICTING_DUPLICATE",
-                        details={
-                            "existing_hash": seen_in_batch[source_id],
-                            "incoming_hash": content_hash,
-                            "incoming_payload": raw_dict,
-                            "row_index": row_idx,
-                            "intra_batch": True,
-                        },
+                        source_id=source_id,
+                        raw_dict=raw_dict,
+                        content_hash=content_hash,
+                        existing_hash=seen_in_batch[source_id],
+                        row_idx=row_idx,
+                        intra_batch=True,
                     )
-                    session.add(dq_issue)
                     errors.append(
                         ImportRowError(
                             row_index=row_idx,
@@ -131,33 +129,41 @@ class IngestionService:
                 .first()
             )
 
+            is_retry = False
             if existing_raw:
                 if existing_raw.content_hash == content_hash:
-                    # Idempotent Repeat: skip processing, do not double count
-                    duplicate_count += 1
-                    seen_in_batch[source_id] = content_hash
-                    logger.info(
-                        f"Skipping identical duplicate row: dataset={dataset_name}, source_id={source_id}"
-                    )
-                    continue
+                    if existing_raw.status == "ACCEPTED":
+                        # Only count a row as a duplicate when the existing record is ACCEPTED
+                        duplicate_count += 1
+                        seen_in_batch[source_id] = content_hash
+                        logger.info(
+                            f"Skipping identical duplicate row: dataset={dataset_name}, source_id={source_id}"
+                        )
+                        continue
+                    else:
+                        # Existing record is REJECTED: treat as retryable
+                        logger.info(
+                            f"Retrying previously rejected row: dataset={dataset_name}, source_id={source_id}"
+                        )
+                        raw_record = existing_raw
+                        raw_record.batch_id = batch.id
+                        is_retry = True
                 else:
-                    # Conflicting payload for the same source ID: record DataQualityIssue
+                    # Conflicting payload for the same source ID: record DataQualityIssue idempotently
                     rejected_count += 1
                     seen_in_batch[source_id] = content_hash
-                    dq_issue = DataQualityIssue(
+                    cls._record_conflicting_duplicate(
+                        session=session,
                         tenant_id=tenant_id,
                         source_system=raw_dict.get("source_system", "UNKNOWN"),
                         dataset_name=dataset_name,
-                        source_record_id=source_id,
-                        issue_type="CONFLICTING_DUPLICATE",
-                        details={
-                            "existing_hash": existing_raw.content_hash,
-                            "incoming_hash": content_hash,
-                            "incoming_payload": raw_dict,
-                            "row_index": row_idx,
-                        },
+                        source_id=source_id,
+                        raw_dict=raw_dict,
+                        content_hash=content_hash,
+                        existing_hash=existing_raw.content_hash,
+                        row_idx=row_idx,
+                        intra_batch=False,
                     )
-                    session.add(dq_issue)
                     errors.append(
                         ImportRowError(
                             row_index=row_idx,
@@ -167,37 +173,46 @@ class IngestionService:
                     )
                     continue
 
-            # 3. Record new RawRecord and mark seen
+            # 3. If not retrying, record new RawRecord and mark seen
             seen_in_batch[source_id] = content_hash
-            raw_record = RawRecord(
-                batch_id=batch.id,
-                dataset_name=dataset_name,
-                source_system=raw_dict.get("source_system", cls._infer_source_system(dataset_name)),
-                source_record_id=source_id,
-                content_hash=content_hash,
-                raw_payload=raw_dict,
-                status="ACCEPTED",
-            )
-            session.add(raw_record)
+            if not is_retry:
+                raw_record = RawRecord(
+                    batch_id=batch.id,
+                    dataset_name=dataset_name,
+                    source_system=raw_dict.get("source_system", cls._infer_source_system(dataset_name)),
+                    source_record_id=source_id,
+                    content_hash=content_hash,
+                    raw_payload=raw_dict,
+                    status="REJECTED",
+                )
+                session.add(raw_record)
 
-            # 4. Canonical Normalization and Insertion
+            # 4. Canonical Normalization and Insertion (wrapped in savepoint)
             try:
-                cls._persist_canonical_entity(session, tenant_id, batch.id, dataset_name, model)
+                with session.begin_nested():
+                    cls._persist_canonical_entity(session, tenant_id, batch.id, dataset_name, model)
+                raw_record.status = "ACCEPTED"
+                raw_record.error_message = None
                 accepted_count += 1
+                cls._resolve_dq_issues_for_source(session, tenant_id, dataset_name, source_id)
             except UnmappedEntityError as ue:
                 rejected_count += 1
-                dq_issue = DataQualityIssue(
+                raw_record.status = "REJECTED"
+                raw_record.error_message = str(ue)
+                cls._record_unmapped_dq_issue(
+                    session=session,
                     tenant_id=tenant_id,
-                    source_system=raw_dict.get("source_system", cls._infer_source_system(dataset_name)),
+                    raw_dict=raw_dict,
                     dataset_name=dataset_name,
-                    source_record_id=source_id,
-                    issue_type="UNMAPPED_CROSSWALK",
-                    details={"error": str(ue), "row_index": row_idx, "payload": raw_dict},
+                    source_id=source_id,
+                    row_idx=row_idx,
+                    error=ue,
                 )
-                session.add(dq_issue)
                 errors.append(ImportRowError(row_index=row_idx, source_record_id=source_id, error=str(ue)))
             except Exception as ex:
                 rejected_count += 1
+                raw_record.status = "REJECTED"
+                raw_record.error_message = str(ex)
                 errors.append(ImportRowError(row_index=row_idx, source_record_id=source_id, error=str(ex)))
 
         # Update batch summary
@@ -253,6 +268,137 @@ class IngestionService:
         if dataset_name in ("employees", "workforce_status"):
             return "HRMS"
         return "UNKNOWN"
+
+    @classmethod
+    def _record_conflicting_duplicate(
+        cls,
+        session: Session,
+        tenant_id: str,
+        source_system: str,
+        dataset_name: str,
+        source_id: str,
+        raw_dict: dict,
+        content_hash: str,
+        existing_hash: str,
+        row_idx: int,
+        intra_batch: bool = False,
+    ) -> DataQualityIssue:
+        """Records a CONFLICTING_DUPLICATE DQ issue idempotently (skips if identical incoming hash exists)."""
+        for obj in session.new:
+            if (
+                isinstance(obj, DataQualityIssue)
+                and obj.dataset_name == dataset_name
+                and obj.source_record_id == source_id
+                and obj.issue_type == "CONFLICTING_DUPLICATE"
+            ):
+                if obj.details and obj.details.get("incoming_hash") == content_hash:
+                    return obj
+
+        existing_issues = (
+            session.query(DataQualityIssue)
+            .filter_by(
+                tenant_id=tenant_id,
+                dataset_name=dataset_name,
+                source_record_id=source_id,
+                issue_type="CONFLICTING_DUPLICATE",
+            )
+            .all()
+        )
+        for issue in existing_issues:
+            if issue.details and issue.details.get("incoming_hash") == content_hash:
+                logger.info(
+                    f"Skipping duplicate DQ issue for dataset={dataset_name}, source_id={source_id}"
+                )
+                return issue
+
+        dq_issue = DataQualityIssue(
+            tenant_id=tenant_id,
+            source_system=source_system,
+            dataset_name=dataset_name,
+            source_record_id=source_id,
+            issue_type="CONFLICTING_DUPLICATE",
+            details={
+                "existing_hash": existing_hash,
+                "incoming_hash": content_hash,
+                "incoming_payload": raw_dict,
+                "row_index": row_idx,
+                "intra_batch": intra_batch,
+            },
+        )
+        session.add(dq_issue)
+        return dq_issue
+
+    @classmethod
+    def _record_unmapped_dq_issue(
+        cls,
+        session: Session,
+        tenant_id: str,
+        raw_dict: dict,
+        dataset_name: str,
+        source_id: str,
+        row_idx: int,
+        error: Exception,
+    ) -> DataQualityIssue:
+        """Records an UNMAPPED_CROSSWALK DQ issue idempotently."""
+        for obj in session.new:
+            if (
+                isinstance(obj, DataQualityIssue)
+                and obj.dataset_name == dataset_name
+                and obj.source_record_id == source_id
+                and obj.issue_type == "UNMAPPED_CROSSWALK"
+            ):
+                return obj
+
+        existing = (
+            session.query(DataQualityIssue)
+            .filter_by(
+                tenant_id=tenant_id,
+                dataset_name=dataset_name,
+                source_record_id=source_id,
+                issue_type="UNMAPPED_CROSSWALK",
+                resolved_at=None,
+            )
+            .first()
+        )
+        if existing:
+            return existing
+
+        dq_issue = DataQualityIssue(
+            tenant_id=tenant_id,
+            source_system=raw_dict.get("source_system", cls._infer_source_system(dataset_name)),
+            dataset_name=dataset_name,
+            source_record_id=source_id,
+            issue_type="UNMAPPED_CROSSWALK",
+            details={"error": str(error), "row_index": row_idx, "payload": raw_dict},
+        )
+        session.add(dq_issue)
+        return dq_issue
+
+    @classmethod
+    def _resolve_dq_issues_for_source(
+        cls,
+        session: Session,
+        tenant_id: str,
+        dataset_name: str,
+        source_id: str,
+    ) -> None:
+        """Resolves any open unmapped DQ issues for the given source record upon successful retry."""
+        open_issues = (
+            session.query(DataQualityIssue)
+            .filter(
+                DataQualityIssue.tenant_id == tenant_id,
+                DataQualityIssue.dataset_name == dataset_name,
+                DataQualityIssue.source_record_id == source_id,
+                DataQualityIssue.resolved_at.is_(None),
+            )
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        for issue in open_issues:
+            if issue.issue_type.startswith("UNMAPPED"):
+                issue.resolved_at = now
+                logger.info(f"Marked DataQualityIssue {issue.id} as RESOLVED for {source_id}")
+
 
     @classmethod
     def _persist_canonical_entity(

@@ -54,3 +54,5 @@ class DataQualityIssue(Base):
     issue_type = Column(String(64), nullable=False, index=True)  # UNMAPPED_PRODUCT, UNMAPPED_LOCATION, CONFLICTING_DUPLICATE
     details = Column(JSON, nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    resolved_at = Column(DateTime(timezone=True), nullable=True, index=True)
+

@@ -802,4 +802,39 @@ WHY IT WAS DONE:
   and ensuring tasks and exceptions can never disagree.
 
 
+[2026-10-18 00:23:00 +05:30] - STEP 15: RESOLUTION OF BUG 2 (RECOVER REJECTED ROWS ON RE-IMPORT & IDEMPOTENT DQ ISSUES)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Reproduced Bug 2 by writing failing tests in tests/test_ingestion.py per FIX.md ground rules:
+   - Created TestBug2RecoverRejectedRowsOnReimport:
+     * test_import_pos_before_aliases_then_recover_on_reimport: imported purchase orders before alias files
+       (all rejected with UnmappedEntityError), imported aliases, and re-imported purchase orders.
+       Observed failure on original code: accepted_rows was 0 (expected 6) and 7 duplicate rows were reported
+       because RawRecords remained marked ACCEPTED, causing the retry to be skipped.
+     * test_conflicting_duplicate_dq_issue_idempotency: imported conflicting duplicate payload twice.
+       Observed failure on original code: 2 duplicate DataQualityIssue records created instead of 1.
+2. Implemented Savepoint Isolation & Retryable Re-import (app/ingestion/service.py, app/db/models/exception.py):
+   - Added resolved_at column to DataQualityIssue model and DataQualityIssueResponse schema.
+   - Refactored IngestionService._process_rows():
+     * Set RawRecord.status to REJECTED (and error_message) when canonical normalization fails.
+     * In cross-batch duplicate check, rows with identical content_hash are only skipped if status is ACCEPTED;
+       rows with status REJECTED are treated as retryable, reusing the existing RawRecord and attempting normalization.
+     * Wrapped canonical normalization and entity persistence in a savepoint (session.begin_nested()) per row
+       to guarantee bad rows leave zero partial canonical state.
+     * On successful recovery of previously rejected rows, invokes _resolve_dq_issues_for_source() to mark open
+       UNMAPPED_CROSSWALK DataQualityIssues as resolved (resolved_at populated).
+     * Implemented _record_conflicting_duplicate(): verifies incoming hash against existing DQ issues and
+       in-memory session state before creating new records, ensuring idempotent conflict reporting.
+3. Executed Automated Verification:
+   - tests/test_ingestion.py (including both new Bug 2 tests): 10/10 PASSED.
+   - Full test suite: 140/140 PASSED across all 10 test modules in 6.24s.
+   - scripts/run_verification.py: ALL SCENARIOS & OPERATIONAL INVARIANTS PASSED.
+
+WHY IT WAS DONE:
+- Resolves Bug 2 from FIX.md: guarantees that import order never changes the final canonical state,
+  allowing out-of-order dataset imports (such as orders before aliases) to fully recover upon alias resolution,
+  while maintaining idempotent deduplication and clean data quality anomaly lifecycles.
+
+
+
 
