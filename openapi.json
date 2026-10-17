@@ -1,0 +1,2531 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "OPSIB Retail Exception & Reliability Engine",
+    "description": "Operational intelligence backend for retail data integration, exception detection, and workforce task routing with server-enforced state machine and idempotent retry resilience.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/v1/imports/{dataset}": {
+      "post": {
+        "tags": [
+          "Imports & Data Quality"
+        ],
+        "summary": "Ingest raw dataset (CSV, JSON, or Multipart File)",
+        "description": "Validates, deduplicates, and normalizes records for the specified dataset into canonical storage. Supports application/json (list of records or {'records': [...]}), multipart/form-data, and text/csv.",
+        "operationId": "import_dataset_api_v1_imports__dataset__post",
+        "parameters": [
+          {
+            "name": "dataset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Dataset"
+            }
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/{import_id}": {
+      "get": {
+        "tags": [
+          "Imports & Data Quality"
+        ],
+        "summary": "Get Import Status",
+        "description": "Retrieves processing counts, errors, and status for an import batch.",
+        "operationId": "get_import_status_api_v1_imports__import_id__get",
+        "parameters": [
+          {
+            "name": "import_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Import Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/data-quality": {
+      "get": {
+        "tags": [
+          "Imports & Data Quality"
+        ],
+        "summary": "Get Data Quality Issues",
+        "description": "Retrieves unresolved data quality issues, unmapped crosswalks, and conflicting duplicates.\nKeeps bad or ambiguous data visible without contaminating business exception reporting.",
+        "operationId": "get_data_quality_issues_api_v1_data_quality_get",
+        "parameters": [
+          {
+            "name": "issue_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by issue type (e.g. UNMAPPED_CROSSWALK, CONFLICTING_DUPLICATE)",
+              "title": "Issue Type"
+            },
+            "description": "Filter by issue type (e.g. UNMAPPED_CROSSWALK, CONFLICTING_DUPLICATE)"
+          },
+          {
+            "name": "dataset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by dataset name",
+              "title": "Dataset"
+            },
+            "description": "Filter by dataset name"
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DataQualityIssueResponse"
+                  },
+                  "title": "Response Get Data Quality Issues Api V1 Data Quality Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reconciliation/run": {
+      "post": {
+        "tags": [
+          "Reconciliation & Exceptions"
+        ],
+        "summary": "Trigger deterministic reconciliation against frozen evaluation time",
+        "description": "Runs the shortfall detection engine against all canonical PO lines using the frozen evaluation clock (2026-10-16T15:00:00+05:30). Also auto-creates HumanTasks for each new exception with workforce routing. This endpoint is idempotent: repeated calls will not create duplicate exceptions or tasks.",
+        "operationId": "run_reconciliation_api_v1_reconciliation_run_post",
+        "parameters": [
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconciliationRunResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/exceptions": {
+      "get": {
+        "tags": [
+          "Reconciliation & Exceptions"
+        ],
+        "summary": "List operational exceptions with optional filters",
+        "description": "Return all operational exceptions, optionally filtered.",
+        "operationId": "list_exceptions_api_v1_exceptions_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by exception status (e.g. DETECTED, RESOLVED)",
+              "title": "Status"
+            },
+            "description": "Filter by exception status (e.g. DETECTED, RESOLVED)"
+          },
+          {
+            "name": "canonical_location_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by canonical location (e.g. STORE-014)",
+              "title": "Canonical Location Id"
+            },
+            "description": "Filter by canonical location (e.g. STORE-014)"
+          },
+          {
+            "name": "po_number",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by PO number (e.g. PO-501)",
+              "title": "Po Number"
+            },
+            "description": "Filter by PO number (e.g. PO-501)"
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExceptionListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/exceptions/{exception_id}": {
+      "get": {
+        "tags": [
+          "Reconciliation & Exceptions"
+        ],
+        "summary": "Retrieve a single exception by ID with detailed context",
+        "description": "Returns the exception alongside its canonical purchase order line, matching goods receipts, and active workforce task.",
+        "operationId": "get_exception_api_v1_exceptions__exception_id__get",
+        "parameters": [
+          {
+            "name": "exception_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Exception Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationalExceptionDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks": {
+      "get": {
+        "tags": [
+          "Tasks & Workflow"
+        ],
+        "summary": "List tasks with optional filters",
+        "operationId": "list_tasks_api_v1_tasks_get",
+        "parameters": [
+          {
+            "name": "assignee_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Assignee Id"
+            }
+          },
+          {
+            "name": "canonical_location_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Canonical Location Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}": {
+      "get": {
+        "tags": [
+          "Tasks & Workflow"
+        ],
+        "summary": "Task detail with full audit history",
+        "operationId": "get_task_api_v1_tasks__task_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HumanTaskDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/acknowledge": {
+      "post": {
+        "tags": [
+          "Tasks & Workflow"
+        ],
+        "summary": "Acknowledge an assigned task (ASSIGNED -> ACKNOWLEDGED)",
+        "operationId": "acknowledge_task_api_v1_tasks__task_id__acknowledge_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcknowledgeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HumanTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/start": {
+      "post": {
+        "tags": [
+          "Tasks & Workflow"
+        ],
+        "summary": "Start investigation (ACKNOWLEDGED -> IN_PROGRESS)",
+        "operationId": "start_task_api_v1_tasks__task_id__start_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HumanTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/complete": {
+      "post": {
+        "tags": [
+          "Tasks & Workflow"
+        ],
+        "summary": "Complete task with resolution (IN_PROGRESS -> COMPLETED). Idempotent on retry.",
+        "operationId": "complete_task_api_v1_tasks__task_id__complete_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HumanTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/submit-verification": {
+      "post": {
+        "tags": [
+          "Tasks & Workflow"
+        ],
+        "summary": "Submit completed task for verification (COMPLETED -> PENDING_VERIFICATION)",
+        "operationId": "submit_for_verification_api_v1_tasks__task_id__submit_verification_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitForVerificationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HumanTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/verify": {
+      "post": {
+        "tags": [
+          "Tasks & Workflow"
+        ],
+        "summary": "Verify task and close exception (PENDING_VERIFICATION -> VERIFIED)",
+        "operationId": "verify_task_api_v1_tasks__task_id__verify_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HumanTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/reopen": {
+      "post": {
+        "tags": [
+          "Tasks & Workflow"
+        ],
+        "summary": "Reopen task for rework (PENDING_VERIFICATION -> REOPENED)",
+        "operationId": "reopen_task_api_v1_tasks__task_id__reopen_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReopenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HumanTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/reassign": {
+      "post": {
+        "tags": [
+          "Tasks & Workflow"
+        ],
+        "summary": "Reassign task to a different employee",
+        "description": "Permitted from ASSIGNED, ACKNOWLEDGED, or IN_PROGRESS states.",
+        "operationId": "reassign_task_api_v1_tasks__task_id__reassign_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReassignRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HumanTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/exceptions/{id}/investigate": {
+      "post": {
+        "tags": [
+          "AI Advisory Investigation"
+        ],
+        "summary": "Generate a grounded AI advisory investigation brief for an exception",
+        "description": "Invokes the AI copilot (powered by OpenRouter or deterministic mock) to analyze the evidence package for the specified operational exception. Strictly advisory: does NOT mutate database records, does NOT calculate authoritative quantities, and strips ungrounded or hallucinated citations via safety guardrails.",
+        "operationId": "investigate_exception_api_v1_exceptions__id__investigate_post",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Id"
+            }
+          },
+          {
+            "name": "use_mock",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Explicitly force mock provider (defaults to mock if OPENROUTER_API_KEY is unset)",
+              "title": "Use Mock"
+            },
+            "description": "Explicitly force mock provider (defaults to mock if OPENROUTER_API_KEY is unset)"
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional model override for OpenRouter (e.g. 'anthropic/claude-3.5-sonnet')",
+              "title": "Model"
+            },
+            "description": "Optional model override for OpenRouter (e.g. 'anthropic/claude-3.5-sonnet')"
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationBriefResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Health Check",
+        "description": "Health check and service status.",
+        "operationId": "health_check__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AcknowledgeRequest": {
+        "properties": {
+          "actor_id": {
+            "type": "string",
+            "title": "Actor Id",
+            "description": "Employee ID performing the acknowledgement"
+          }
+        },
+        "type": "object",
+        "required": [
+          "actor_id"
+        ],
+        "title": "AcknowledgeRequest",
+        "description": "Request body for POST /tasks/{id}/acknowledge."
+      },
+      "CanonicalGoodsReceiptLineSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "receipt_number": {
+            "type": "string",
+            "title": "Receipt Number"
+          },
+          "receipt_line": {
+            "type": "integer",
+            "title": "Receipt Line"
+          },
+          "po_number": {
+            "type": "string",
+            "title": "Po Number"
+          },
+          "po_line_number": {
+            "type": "integer",
+            "title": "Po Line Number"
+          },
+          "accepted_qty_base": {
+            "type": "number",
+            "title": "Accepted Qty Base"
+          },
+          "base_uom": {
+            "type": "string",
+            "title": "Base Uom"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Received At"
+          },
+          "posting_status": {
+            "type": "string",
+            "title": "Posting Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "receipt_number",
+          "receipt_line",
+          "po_number",
+          "po_line_number",
+          "accepted_qty_base",
+          "base_uom",
+          "received_at",
+          "posting_status"
+        ],
+        "title": "CanonicalGoodsReceiptLineSummary",
+        "description": "Summary of an associated canonical goods receipt line."
+      },
+      "CanonicalPOLineSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "po_number": {
+            "type": "string",
+            "title": "Po Number"
+          },
+          "line_number": {
+            "type": "integer",
+            "title": "Line Number"
+          },
+          "supplier_code": {
+            "type": "string",
+            "title": "Supplier Code"
+          },
+          "canonical_location_id": {
+            "type": "string",
+            "title": "Canonical Location Id"
+          },
+          "canonical_product_id": {
+            "type": "string",
+            "title": "Canonical Product Id"
+          },
+          "ordered_qty_base": {
+            "type": "number",
+            "title": "Ordered Qty Base"
+          },
+          "base_uom": {
+            "type": "string",
+            "title": "Base Uom"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "expected_receipt_by": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expected Receipt By"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "po_number",
+          "line_number",
+          "supplier_code",
+          "canonical_location_id",
+          "canonical_product_id",
+          "ordered_qty_base",
+          "base_uom",
+          "status",
+          "expected_receipt_by"
+        ],
+        "title": "CanonicalPOLineSummary",
+        "description": "Summary of the associated canonical purchase order line."
+      },
+      "CompleteRequest": {
+        "properties": {
+          "actor_id": {
+            "type": "string",
+            "title": "Actor Id",
+            "description": "Employee ID completing the task"
+          },
+          "resolution_code": {
+            "type": "string",
+            "title": "Resolution Code",
+            "description": "Resolution code (e.g. SUPPLIER_SHORT_SHIPMENT_CONFIRMED, GOODS_FOUND_IN_TRANSIT)"
+          },
+          "resolution_evidence_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Evidence Ref",
+            "description": "Reference to supporting evidence document or system record"
+          },
+          "resolution_notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Notes",
+            "description": "Free-text resolution notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "actor_id",
+          "resolution_code"
+        ],
+        "title": "CompleteRequest",
+        "description": "Request body for POST /tasks/{id}/complete."
+      },
+      "DataQualityIssueResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "title": "Tenant Id"
+          },
+          "source_system": {
+            "type": "string",
+            "title": "Source System"
+          },
+          "dataset_name": {
+            "type": "string",
+            "title": "Dataset Name"
+          },
+          "source_record_id": {
+            "type": "string",
+            "title": "Source Record Id"
+          },
+          "issue_type": {
+            "type": "string",
+            "title": "Issue Type"
+          },
+          "details": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Details"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "source_system",
+          "dataset_name",
+          "source_record_id",
+          "issue_type",
+          "details",
+          "created_at"
+        ],
+        "title": "DataQualityIssueResponse",
+        "description": "API response model for data quality items."
+      },
+      "ExceptionListResponse": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OperationalExceptionResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "items"
+        ],
+        "title": "ExceptionListResponse",
+        "description": "Paginated list of operational exceptions."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HumanTaskDetailResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "title": "Tenant Id"
+          },
+          "exception_id": {
+            "type": "string",
+            "title": "Exception Id"
+          },
+          "task_key": {
+            "type": "string",
+            "title": "Task Key"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "assignee_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Id"
+          },
+          "assignment_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Reason"
+          },
+          "canonical_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Location Id"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "resolution_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Code"
+          },
+          "resolution_evidence_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Evidence Ref"
+          },
+          "resolution_notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Notes"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "audit_events": {
+            "items": {
+              "$ref": "#/components/schemas/TaskAuditEventResponse"
+            },
+            "type": "array",
+            "title": "Audit Events",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "exception_id",
+          "task_key",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "HumanTaskDetailResponse",
+        "description": "Detail representation of a human task including full audit trail."
+      },
+      "HumanTaskResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "title": "Tenant Id"
+          },
+          "exception_id": {
+            "type": "string",
+            "title": "Exception Id"
+          },
+          "task_key": {
+            "type": "string",
+            "title": "Task Key"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "assignee_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Id"
+          },
+          "assignment_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Reason"
+          },
+          "canonical_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Location Id"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "resolution_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Code"
+          },
+          "resolution_evidence_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Evidence Ref"
+          },
+          "resolution_notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Notes"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "exception_id",
+          "task_key",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "HumanTaskResponse",
+        "description": "Summary representation of a human task (list view)."
+      },
+      "ImportResult": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "dataset_name": {
+            "type": "string",
+            "title": "Dataset Name"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "total_rows": {
+            "type": "integer",
+            "title": "Total Rows"
+          },
+          "accepted_rows": {
+            "type": "integer",
+            "title": "Accepted Rows"
+          },
+          "duplicate_rows": {
+            "type": "integer",
+            "title": "Duplicate Rows"
+          },
+          "rejected_rows": {
+            "type": "integer",
+            "title": "Rejected Rows"
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/ImportRowError"
+            },
+            "type": "array",
+            "title": "Errors",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "dataset_name",
+          "status",
+          "total_rows",
+          "accepted_rows",
+          "duplicate_rows",
+          "rejected_rows"
+        ],
+        "title": "ImportResult",
+        "description": "Summary result returned after ingesting a dataset batch."
+      },
+      "ImportRowError": {
+        "properties": {
+          "row_index": {
+            "type": "integer",
+            "title": "Row Index"
+          },
+          "source_record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Record Id"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "row_index",
+          "error"
+        ],
+        "title": "ImportRowError",
+        "description": "Details of an invalid row."
+      },
+      "InvestigationBrief": {
+        "properties": {
+          "executive_summary": {
+            "type": "string",
+            "title": "Executive Summary",
+            "description": "High-level operational overview of the discrepancy"
+          },
+          "analysis_of_evidence": {
+            "type": "string",
+            "title": "Analysis Of Evidence",
+            "description": "Detailed review of the supplied PO and Goods Receipt records"
+          },
+          "missing_context": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Context",
+            "description": "List of unobserved operational facts (e.g., supplier dispatch, ASN, POD)"
+          },
+          "recommended_investigation_steps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Recommended Investigation Steps",
+            "description": "Actionable physical and administrative steps for the assigned associate/manager"
+          },
+          "cited_record_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Cited Record Ids",
+            "description": "Explicit source record IDs cited in this analysis (must be in evidence package)"
+          },
+          "confidence_score": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence Score",
+            "description": "Self-assessed confidence in the factual grounding of the brief",
+            "default": 0.9
+          },
+          "safety_warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Safety Warnings",
+            "description": "System-injected warnings for stripped hallucinations or ungrounded citations"
+          },
+          "neutrality_disclaimer": {
+            "type": "string",
+            "title": "Neutrality Disclaimer",
+            "default": "Advisory summary only. Supplier dispatch / ASN data absent; findings do not establish supplier fault or transit loss."
+          }
+        },
+        "type": "object",
+        "required": [
+          "executive_summary",
+          "analysis_of_evidence",
+          "missing_context",
+          "recommended_investigation_steps"
+        ],
+        "title": "InvestigationBrief",
+        "description": "Structured investigation brief output generated by the AI copilot\nand verified by citation guardrails."
+      },
+      "InvestigationBriefResponse": {
+        "properties": {
+          "exception_id": {
+            "type": "string",
+            "title": "Exception Id"
+          },
+          "exception_key": {
+            "type": "string",
+            "title": "Exception Key"
+          },
+          "provider_used": {
+            "type": "string",
+            "title": "Provider Used"
+          },
+          "model_used": {
+            "type": "string",
+            "title": "Model Used"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "brief": {
+            "$ref": "#/components/schemas/InvestigationBrief"
+          }
+        },
+        "type": "object",
+        "required": [
+          "exception_id",
+          "exception_key",
+          "provider_used",
+          "model_used",
+          "generated_at",
+          "brief"
+        ],
+        "title": "InvestigationBriefResponse",
+        "description": "Full API response wrapper for the investigation brief endpoint."
+      },
+      "LinkedTaskSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "task_key": {
+            "type": "string",
+            "title": "Task Key"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "assignee_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Id"
+          },
+          "assignment_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Reason"
+          },
+          "resolution_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Code"
+          },
+          "resolution_evidence_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Evidence Ref"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "task_key",
+          "status"
+        ],
+        "title": "LinkedTaskSummary",
+        "description": "Summary of the active workforce task linked to this exception."
+      },
+      "OperationalExceptionDetailResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "title": "Tenant Id"
+          },
+          "exception_key": {
+            "type": "string",
+            "title": "Exception Key"
+          },
+          "exception_type": {
+            "type": "string",
+            "title": "Exception Type"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "po_number": {
+            "type": "string",
+            "title": "Po Number"
+          },
+          "po_line_number": {
+            "type": "integer",
+            "title": "Po Line Number"
+          },
+          "canonical_product_id": {
+            "type": "string",
+            "title": "Canonical Product Id"
+          },
+          "canonical_location_id": {
+            "type": "string",
+            "title": "Canonical Location Id"
+          },
+          "expected_qty_base": {
+            "type": "number",
+            "title": "Expected Qty Base"
+          },
+          "received_qty_base": {
+            "type": "number",
+            "title": "Received Qty Base"
+          },
+          "variance_qty_base": {
+            "type": "number",
+            "title": "Variance Qty Base"
+          },
+          "base_uom": {
+            "type": "string",
+            "title": "Base Uom"
+          },
+          "rule_version": {
+            "type": "string",
+            "title": "Rule Version"
+          },
+          "evidence_records": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence Records"
+          },
+          "neutral_summary": {
+            "type": "string",
+            "title": "Neutral Summary"
+          },
+          "missing_evidence": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Evidence"
+          },
+          "detected_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Detected At"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "resolution_notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Notes"
+          },
+          "purchase_order_line": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalPOLineSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "goods_receipt_lines": {
+            "items": {
+              "$ref": "#/components/schemas/CanonicalGoodsReceiptLineSummary"
+            },
+            "type": "array",
+            "title": "Goods Receipt Lines",
+            "default": []
+          },
+          "task": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LinkedTaskSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "exception_key",
+          "exception_type",
+          "status",
+          "po_number",
+          "po_line_number",
+          "canonical_product_id",
+          "canonical_location_id",
+          "expected_qty_base",
+          "received_qty_base",
+          "variance_qty_base",
+          "base_uom",
+          "rule_version",
+          "evidence_records",
+          "neutral_summary",
+          "missing_evidence",
+          "detected_at"
+        ],
+        "title": "OperationalExceptionDetailResponse",
+        "description": "Detailed exception view including supporting PO line, receipt lines, and workforce task."
+      },
+      "OperationalExceptionResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "title": "Tenant Id"
+          },
+          "exception_key": {
+            "type": "string",
+            "title": "Exception Key"
+          },
+          "exception_type": {
+            "type": "string",
+            "title": "Exception Type"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "po_number": {
+            "type": "string",
+            "title": "Po Number"
+          },
+          "po_line_number": {
+            "type": "integer",
+            "title": "Po Line Number"
+          },
+          "canonical_product_id": {
+            "type": "string",
+            "title": "Canonical Product Id"
+          },
+          "canonical_location_id": {
+            "type": "string",
+            "title": "Canonical Location Id"
+          },
+          "expected_qty_base": {
+            "type": "number",
+            "title": "Expected Qty Base"
+          },
+          "received_qty_base": {
+            "type": "number",
+            "title": "Received Qty Base"
+          },
+          "variance_qty_base": {
+            "type": "number",
+            "title": "Variance Qty Base"
+          },
+          "base_uom": {
+            "type": "string",
+            "title": "Base Uom"
+          },
+          "rule_version": {
+            "type": "string",
+            "title": "Rule Version"
+          },
+          "evidence_records": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence Records"
+          },
+          "neutral_summary": {
+            "type": "string",
+            "title": "Neutral Summary"
+          },
+          "missing_evidence": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Evidence"
+          },
+          "detected_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Detected At"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "resolution_notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "exception_key",
+          "exception_type",
+          "status",
+          "po_number",
+          "po_line_number",
+          "canonical_product_id",
+          "canonical_location_id",
+          "expected_qty_base",
+          "received_qty_base",
+          "variance_qty_base",
+          "base_uom",
+          "rule_version",
+          "evidence_records",
+          "neutral_summary",
+          "missing_evidence",
+          "detected_at"
+        ],
+        "title": "OperationalExceptionResponse",
+        "description": "Full representation of a detected operational exception."
+      },
+      "ReassignRequest": {
+        "properties": {
+          "actor_id": {
+            "type": "string",
+            "title": "Actor Id",
+            "description": "Employee ID performing the reassignment"
+          },
+          "new_assignee_id": {
+            "type": "string",
+            "title": "New Assignee Id",
+            "description": "Employee ID of the new assignee"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Reason",
+            "description": "Mandatory reason for reassignment"
+          }
+        },
+        "type": "object",
+        "required": [
+          "actor_id",
+          "new_assignee_id",
+          "reason"
+        ],
+        "title": "ReassignRequest",
+        "description": "Request body for POST /tasks/{id}/reassign."
+      },
+      "ReconciliationRunResponse": {
+        "properties": {
+          "run_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Run At"
+          },
+          "evaluation_time": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Evaluation Time"
+          },
+          "total_po_lines_evaluated": {
+            "type": "integer",
+            "title": "Total Po Lines Evaluated"
+          },
+          "skipped_cancelled": {
+            "type": "integer",
+            "title": "Skipped Cancelled"
+          },
+          "skipped_future_deadline": {
+            "type": "integer",
+            "title": "Skipped Future Deadline"
+          },
+          "fully_satisfied": {
+            "type": "integer",
+            "title": "Fully Satisfied"
+          },
+          "shortfalls_detected": {
+            "type": "integer",
+            "title": "Shortfalls Detected"
+          },
+          "exceptions_created": {
+            "type": "integer",
+            "title": "Exceptions Created"
+          },
+          "exceptions_already_existed": {
+            "type": "integer",
+            "title": "Exceptions Already Existed"
+          },
+          "new_exceptions": {
+            "items": {
+              "$ref": "#/components/schemas/OperationalExceptionResponse"
+            },
+            "type": "array",
+            "title": "New Exceptions",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_at",
+          "evaluation_time",
+          "total_po_lines_evaluated",
+          "skipped_cancelled",
+          "skipped_future_deadline",
+          "fully_satisfied",
+          "shortfalls_detected",
+          "exceptions_created",
+          "exceptions_already_existed"
+        ],
+        "title": "ReconciliationRunResponse",
+        "description": "Summary returned by POST /api/v1/reconciliation/run.\n\nIncludes counters for each outcome category and the list of all\nnewly created exceptions so the caller can immediately inspect findings."
+      },
+      "ReopenRequest": {
+        "properties": {
+          "actor_id": {
+            "type": "string",
+            "title": "Actor Id",
+            "description": "Employee or manager reopening the task"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Reason",
+            "description": "Reason for reopening (e.g. inadequate evidence)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "actor_id",
+          "reason"
+        ],
+        "title": "ReopenRequest",
+        "description": "Request body for POST /tasks/{id}/reopen."
+      },
+      "StartRequest": {
+        "properties": {
+          "actor_id": {
+            "type": "string",
+            "title": "Actor Id",
+            "description": "Employee ID starting investigation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "actor_id"
+        ],
+        "title": "StartRequest",
+        "description": "Request body for POST /tasks/{id}/start."
+      },
+      "SubmitForVerificationRequest": {
+        "properties": {
+          "actor_id": {
+            "type": "string",
+            "title": "Actor Id",
+            "description": "Employee submitting task for manager verification"
+          }
+        },
+        "type": "object",
+        "required": [
+          "actor_id"
+        ],
+        "title": "SubmitForVerificationRequest",
+        "description": "Request body for POST /tasks/{id}/submit-verification."
+      },
+      "TaskAuditEventResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "actor_id": {
+            "type": "string",
+            "title": "Actor Id"
+          },
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "from_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Status"
+          },
+          "to_status": {
+            "type": "string",
+            "title": "To Status"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "event_payload": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Payload"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "task_id",
+          "actor_id",
+          "event_type",
+          "to_status",
+          "timestamp"
+        ],
+        "title": "TaskAuditEventResponse",
+        "description": "Single audit trail entry."
+      },
+      "TaskListResponse": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/HumanTaskResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "items"
+        ],
+        "title": "TaskListResponse",
+        "description": "Paginated list of tasks."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "VerifyRequest": {
+        "properties": {
+          "actor_id": {
+            "type": "string",
+            "title": "Actor Id",
+            "description": "Manager or system ID performing verification"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes",
+            "description": "Optional verification notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "actor_id"
+        ],
+        "title": "VerifyRequest",
+        "description": "Request body for POST /tasks/{id}/verify."
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Imports & Data Quality",
+      "description": "Multi-source CSV/JSON dataset ingestion, provenance hashing, and data quality error tracking."
+    },
+    {
+      "name": "Reconciliation & Exceptions",
+      "description": "Deterministic receipt shortfall detection engine running against the frozen evaluation clock."
+    },
+    {
+      "name": "Tasks & Workflow",
+      "description": "Workforce task assignment, lifecycle state machine, and append-only audit trail."
+    },
+    {
+      "name": "AI Advisory Investigation",
+      "description": "Grounded AI investigation summaries powered by OpenRouter with citation guardrails."
+    },
+    {
+      "name": "Health",
+      "description": "System health checks, active rule version, and authoritative frozen time."
+    }
+  ]
+}

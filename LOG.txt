@@ -1,0 +1,768 @@
+================================================================================
+OPSIB BACKEND ENGINEERING - IMPLEMENTATION AND EXECUTION LOG
+================================================================================
+Project: OPSIB Backend Assessment (Retail Data Integration & Task Reliability)
+Evaluation Clock Anchor: 2026-10-16T15:00:00+05:30
+Repository: d:/opsib-assignment
+================================================================================
+
+[2026-10-17 13:41:00 +05:30] - STEP 1: ASSESSMENT & FIXTURE ANALYSIS
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+- Inspected the assessment specification document: opsib_backend_engineering_assessment.md
+- Examined the companion data pack README.txt
+- Analyzed all six CSV fixture files:
+  1. purchase_order_lines.csv (contains exact duplicate row for ERP-PO506-L1)
+  2. goods_receipt_lines.csv (contains exact duplicate row for WMS-GRN506-A-L1)
+  3. product_aliases.csv (crosswalk for ERP/WMS SKUs; handles BOX to EA conversion with factor 12)
+  4. location_aliases.csv (crosswalk mapping ERP/WMS/HRMS location codes to canonical STORE-014, STORE-015, and REGION-MH)
+  5. employees.csv (HRMS roster: active/inactive status, roles, store assignments, and regional role HR-501 with no store)
+  6. workforce_status.csv (sampled attendance/shift status: HR-101 off shift, HR-103 on shift but inactive in HRMS)
+
+WHY IT WAS DONE:
+- To extract the exact domain boundaries and evaluation criteria before writing code.
+- Key findings established:
+  * Deterministic Frozen Clock: The system must use 2026-10-16T15:00:00+05:30 rather than the local system clock.
+  * Epistemic Neutrality: The data pack lacks supplier dispatch / ASN data. Any goods receipt shortfall against a purchase order must remain neutral and cannot conclude supplier fault or carrier loss.
+  * Six Mandatory Reconciliation Scenarios:
+    - PO-501: 100 EA ordered, split receipts of 60 + 32 = 92 EA -> 8 EA shortfall.
+    - PO-502: 40 EA ordered, 40 EA received -> 0 variance, no exception.
+    - PO-503: 50 EA ordered, 20 EA received, deadline in the future (2026-10-17 18:00) -> not actionable at frozen time.
+    - PO-504: 20 EA ordered, status CANCELLED -> no exception.
+    - PO-505: 10 BOX ordered (120 EA base), 96 EA received -> 24 EA shortfall; routed to fallback store manager HR-401 at STORE-015.
+    - PO-506: 20 EA ordered, duplicate 10 EA receipt row -> deduplicated to 10 EA received, producing a 10 EA shortfall (not 0).
+  * Workforce Routing Logic:
+    - HR-101: Active but OFF_SHIFT -> rejected.
+    - HR-103: Shift says ON_SHIFT, but HRMS employment status is INACTIVE -> HRMS status wins -> rejected.
+    - HR-102: Active and ON_SHIFT receiving associate -> primary candidate selected for STORE-014.
+    - STORE-015: No receiving associate exists -> fallback to active, on-shift store manager HR-401.
+
+
+[2026-10-17 13:43:00 +05:30] - STEP 2: MASTER PLAN CREATION (PLAN.md)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+- Authored a comprehensive, 9-phase master plan in PLAN.md covering:
+  * Phase 1: Environment Setup, Configuration & Foundational Framework
+  * Phase 2: Database Schemas, Invariants & Canonical Models
+  * Phase 3: Data Ingestion, Mapping & Provenance (Task A)
+  * Phase 4: Deterministic Reconciliation & Exception Detection (Task B)
+  * Phase 5: Workforce Routing Policy & Task State Machine (Task C)
+  * Phase 6: REST API Layer & Idempotency Controls
+  * Phase 7: Claude AI Advisory Boundary & Citation Guardrails (Task D)
+  * Phase 8: Comprehensive Test Suite & Scenario Verification (Task D)
+  * Phase 9: Documentation, Operational Runbook & Walkthrough Readiness
+- Corrected Mermaid syntax by enclosing node labels with parentheses in double quotes.
+
+WHY IT WAS DONE:
+- To establish an architectural blueprint that directly maps to the evaluation rubrics: Correctness, Data Provenance, Reliability, Workforce Routing, Code Quality, and Communication.
+
+
+[2026-10-17 13:48:00 +05:30] - STEP 3: ARCHITECTURE SPECIFICATION (ARCHITECTURE.md)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+- Created ARCHITECTURE.md containing:
+  * System Topology Diagram (Mermaid graph TB)
+  * 5 Detailed Process Flowcharts:
+    1. Ingestion, Deduplication & Data Quality Pipeline
+    2. Deterministic Reconciliation & Shortfall Detector
+    3. Workforce Routing & Fallback Decision Flow
+    4. Task State Machine & Lifecycle
+    5. Claude AI Advisory Boundary & Guardrails
+  * Complete Entity-Relationship Diagram (ERD)
+  * 8 Architectural Decision Records (ADRs):
+    - ADR-1: Two-Tier Storage Architecture (Raw Provenance vs Canonical Domain Model)
+    - ADR-2: Idempotency & Conflict Policy (Duplicate Skip vs Conflicting Payload Review)
+    - ADR-3: Temporal Isolation & Frozen Clock Execution
+    - ADR-4: Decoupling Operational Exceptions (Findings) from Human Tasks (Labor)
+    - ADR-5: Server-Enforced State Machine with Idempotent Client Retries
+    - ADR-6: Epistemic Neutrality (Preserving Unknowns; No Unproven Supplier Blame)
+    - ADR-7: Claude AI Advisory Boundary with Grounded Citation Guardrails
+    - ADR-8: Persistence Strategy (PostgreSQL & SQLite Dual Compatibility)
+  * Production hardening roadmap and detailed answers to the assessment design questions.
+- Fixed edge label parsing issues in Mermaid diagrams by removing parentheses from pipe labels (|...|).
+
+WHY IT WAS DONE:
+- To provide full design documentation, justify architectural choices, document trade-offs, and show how the system ensures operational reliability.
+
+
+[2026-10-17 13:58:00 +05:30] - STEP 4: IMPLEMENTATION OF PHASE 1 (CORE FOUNDATION)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Created requirements.txt:
+   - Pinned core dependencies: fastapi, uvicorn, pydantic, sqlalchemy>=2.0.28, python-dateutil, pytest, pytest-asyncio, httpx.
+2. Created app/__init__.py:
+   - Initialized application package with semantic version 1.0.0.
+3. Created app/config.py:
+   - Defined KOLKATA_TZ (+05:30) and FROZEN_TIME (2026-10-16 15:00:00+05:30).
+   - Implemented get_current_time() helper to return the frozen evaluation time deterministically.
+   - Defined configurable DATABASE_URL (defaulting to SQLite WAL mode sqlite:///./opsib.db), DEFAULT_TENANT_ID, and RULE_VERSION.
+4. Created app/core/logging.py:
+   - Implemented structured console logger formatting timestamps, log levels, and module names.
+5. Created app/core/exceptions.py:
+   - Implemented clean domain exception hierarchy:
+     * OPSIBException (base)
+     * DataQualityError & UnmappedEntityError (data mapping issues)
+     * ConflictingDuplicateError (idempotency conflict)
+     * InvalidStateTransitionError (state machine enforcement)
+     * IdempotencyConflictError
+     * ResourceNotFoundError
+
+WHY IT WAS DONE:
+- To establish a solid foundation, ensure strict time determinism across all modules, and provide structured error handling without relying on generic system exceptions.
+
+
+[2026-10-17 14:00:00 +05:30] - STEP 5: IMPLEMENTATION OF PHASE 2 (DATABASE MODELS)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Created app/db/base.py:
+   - Defined SQLAlchemy 2.0 Base(DeclarativeBase).
+2. Created app/db/session.py:
+   - Implemented engine, SessionLocal, get_db() FastAPI dependency, and transaction_scope() context manager.
+   - Added connection listener for SQLite to automatically enable Write-Ahead Logging (WAL mode) and enforce Foreign Key constraints (PRAGMA foreign_keys = ON).
+3. Created app/db/models/raw.py:
+   - ImportBatch: tracks batch status, counts (accepted, rejected, duplicates), and error summaries.
+   - RawRecord: preserves unmutated JSON payloads, source identity, and SHA-256 hash. Enforces UniqueConstraint on (dataset_name, source_record_id).
+4. Created app/db/models/canonical.py:
+   - ProductAlias: maps external SKUs and handles unit conversions (e.g., BOX to EA with factor 12).
+   - LocationAlias: maps external ERP/WMS/HRMS location codes to canonical locations and regions.
+   - PurchaseOrderLine: normalized PO items in base UOM with timezone-aware deadlines and status.
+   - GoodsReceiptLine: normalized receipt lines in base UOM with posting status and timestamps.
+   - Employee: HRMS roster with active status, roles, manager references, and nullable location for regional roles.
+   - WorkforceShift: shift attendance samples with start/end and observation timestamps.
+5. Created app/db/models/exception.py:
+   - OperationalException: stores deterministic exception key, variance in base UOM, rule version, cited source IDs, neutral explanation, and explicit missing evidence list.
+   - DataQualityIssue: tracks unmapped SKUs/locations and conflicting duplicates separately from business exceptions.
+6. Created app/db/models/task.py:
+   - HumanTask: decoupled from exceptions, managing human assignments, reasons, due dates, resolution codes, evidence refs, and retry idempotency keys.
+7. Created app/db/models/audit.py:
+   - TaskAuditEvent: append-only immutable audit trail capturing state changes, actors, reasons, and payloads.
+8. Created app/db/models/__init__.py:
+   - Re-exported all models for clean imports and complete metadata registration.
+
+WHY IT WAS DONE:
+- To establish strict data integrity and separation of concerns:
+  * Raw provenance is preserved for auditability.
+  * Canonical entities allow business logic to work with uniform units and IDs.
+  * Operational exceptions are kept separate from human tasks.
+  * Data quality issues are isolated so they do not generate false business alarms.
+  * Foreign keys and unique constraints protect invariants at the database level.
+
+
+[2026-10-17 14:01:30 +05:30] - STEP 6: TEST HARNESS & PHASE 1 & 2 VERIFICATION
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Created tests/conftest.py:
+   - Implemented in-memory SQLite engine fixture with foreign key pragmas.
+   - Implemented transactional db_session fixture rolling back after each test for isolation.
+2. Created tests/test_models.py:
+   - test_frozen_time_anchor: asserts get_current_time() matches 2026-10-16T15:00:00+05:30.
+   - test_product_and_location_aliases: verifies crosswalk persistence and composite primary keys.
+   - test_raw_record_unique_constraint: asserts database raises IntegrityError on duplicate source IDs.
+   - test_exception_and_task_lifecycle_link: tests end-to-end creation and linkage of OperationalException, Employee, HumanTask, and TaskAuditEvent.
+
+WHY IT WAS DONE:
+- To provide automated verification that the database schema, models, constraints, and time anchor work reliably before building Phase 3 ingestion logic.
+
+[2026-10-17 14:21:00 +05:30] - STEP 7: IMPLEMENTATION OF PHASE 3 (INGESTION, NORMALIZATION & DATA QUALITY)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Created app/schemas/import_schemas.py:
+   - Defined typed Pydantic v2 validation models for all 6 synthetic fixture datasets:
+     * ProductAliasRawRow, LocationAliasRawRow, EmployeeRawRow, WorkforceStatusRawRow,
+       PurchaseOrderLineRawRow, GoodsReceiptLineRawRow.
+   - Enforced explicit timezone offset validation for all timestamp columns (parse_iso_datetime).
+   - Defined API response schemas: ImportResult, ImportRowError, DataQualityIssueResponse.
+2. Created app/ingestion/parser.py:
+   - Implemented CSV parser with whitespace cleaning and row-level error collection.
+   - Implemented compute_payload_hash() using SHA-256 over normalized JSON payloads.
+3. Created app/ingestion/normalizer.py:
+   - Built Product Crosswalk Resolver: maps external item IDs to canonical product IDs and converts quantities to base units (e.g. 10 BOX * 12 -> 120 EA).
+   - Built Location Crosswalk Resolver: maps ERP, WMS, and HRMS location codes to canonical locations and regions.
+   - Built Employee Location Resolver: resolves store assignments while safely handling null store locations for regional roles (HR-501).
+4. Created app/ingestion/service.py (IngestionService):
+   - Implemented atomic dataset ingestion with full provenance tracking.
+   - Duplicate Handling: If incoming source_record_id has an identical SHA-256 payload hash, marks row as DUPLICATE_SKIPPED and avoids double-counting stock.
+   - Conflict Policy: If incoming source_record_id arrives with differing content, flags row as CONFLICT, records a DataQualityIssue(CONFLICTING_DUPLICATE), and does NOT silently mutate existing data.
+   - Unmapped Alias Isolation: Unmapped SKUs or locations write to DataQualityIssue(UNMAPPED_CROSSWALK), keeping bad inputs visible without generating false business shortfall exceptions.
+5. Created CLI Utility scripts/load_fixtures.py:
+   - Automated sequential loading of all 6 CSV fixtures in strict dependency order:
+     product_aliases -> location_aliases -> employees -> workforce_status -> purchase_order_lines -> goods_receipt_lines.
+6. Created Ingestion REST APIs:
+   - app/api/v1/imports.py: POST /api/v1/imports/{dataset} and GET /api/v1/imports/{import_id}.
+   - app/api/v1/data_quality.py: GET /api/v1/data-quality with filters for issue_type and dataset.
+   - app/api/router.py & app/main.py: Integrated endpoints into FastAPI application with health check and CORS.
+7. Created tests/test_ingestion.py:
+   - test_ingest_aliases_and_uom_factors: verifies product/location crosswalk and BOX to EA factor 12.
+   - test_ingest_employees_and_regional_role: verifies HRMS roster and null location for HR-501.
+   - test_ingest_purchase_orders_with_duplicate_and_box_conversion: verifies ERP-PO506-L1 duplicate row skip and PO-505 10 BOX -> 120 EA conversion.
+   - test_ingest_goods_receipts_with_duplicate_deduplication: verifies WMS-GRN506-A-L1 duplicate row skip.
+   - test_double_import_idempotency: verifies running full import twice produces 0 duplicate canonical entities.
+   - test_conflicting_duplicate_detection: verifies conflicting payload logs DataQualityIssue without mutation.
+   - test_unmapped_sku_recorded_as_data_quality: verifies unmapped SKU creates data quality anomaly.
+   - test_api_import_endpoint: verifies FastAPI REST endpoints for import and status inspection.
+
+8. Resilience Fix:
+   - Updated app/api/v1/imports.py to dynamically inspect Request content-type instead of static File(...) signature, preventing startup failure if python-multipart was not yet installed. Added python-multipart to requirements.txt. Added client fixture in tests/conftest.py.
+
+WHY IT WAS DONE:
+- Satisfies all requirements of Task A in the assessment specification:
+  * Ingestion is strictly idempotent: duplicate rows in ERP/WMS fixtures (PO-506 and GRN-506) are safely deduplicated.
+  * UOM conversion is applied during ingestion, ensuring canonical PO lines and goods receipts speak the exact same base unit (EA).
+  * Data quality errors are isolated in dedicated DataQualityIssue records rather than contaminating exception detection.
+  * Lineage is preserved from raw payloads and checksums through to canonical records.
+
+================================================================================
+STATUS: Phase 1, Phase 2 & Phase 3 COMPLETE. Ready for Phase 4 (Reconciliation).
+================================================================================
+
+
+[2026-10-17 16:24:00 +05:30] - STEP 8: IMPLEMENTATION OF PHASE 4 (RECONCILIATION & EXCEPTION DETECTION)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Created app/detection/__init__.py:
+   - Module initializer for the detection package.
+
+2. Created app/detection/rules.py:
+   - Versioned rule constants under RULE_VERSION (v1.0.0):
+     * VARIANCE_TOLERANCE = 0.0 (zero-tolerance: any positive gap is a shortfall).
+     * ELIGIBLE_PO_STATUSES = {"OPEN"} (CANCELLED POs are excluded).
+     * ELIGIBLE_RECEIPT_POSTING_STATUSES = {"POSTED"} (DRAFT/REVERSED excluded).
+     * MISSING_EVIDENCE_NOTE: explicit list citing absent ASN and carrier POD data.
+   - Helper functions:
+     * compute_variance(expected, received) -> float
+     * build_neutral_summary(...) -> str (neutral, non-blaming shortfall description)
+     * build_exception_key(tenant_id, po_number, po_line_number) -> str
+       (deterministic idempotency key: "TENANT-001:RECEIPT_SHORTFALL:PO-501:1")
+
+3. Created app/detection/detector.py (ReconciliationDetector):
+   - Core 4-step detection algorithm per PLAN.md section 4.1:
+     Step 1: Cancellation filter (CANCELLED POs skipped, e.g. PO-504).
+     Step 2: Deadline filter (future expected_receipt_by skipped, e.g. PO-503).
+             SQLite timezone-naive fix: _ensure_tz_aware() attaches Kolkata TZ
+             (+05:30) to naive datetimes returned by SQLite's DateTime column.
+     Step 3: Aggregate POSTED GoodsReceiptLines matching po_number, po_line_number,
+             canonical_product_id, and canonical_location_id.
+     Step 4: Compute variance = ordered_qty_base - sum(accepted_qty_base).
+   - ShortfallFinding value object (transient, not persisted directly).
+   - Full scenario traceability:
+     PO-501: 100 EA - (60+32) EA = 8 EA shortfall (split receipts).
+     PO-502: 40 EA - 40 EA = 0 variance (no exception).
+     PO-503: deadline 2026-10-17T18:00 > frozen 2026-10-16T15:00 -> skipped.
+     PO-504: status=CANCELLED -> skipped.
+     PO-505: 120 EA - 96 EA = 24 EA shortfall (10 BOX * 12 = 120 EA base).
+     PO-506: 20 EA - 10 EA = 10 EA shortfall (duplicate GRN row deduplicated to 10 EA).
+
+4. Created app/detection/service.py (DetectionService):
+   - run_reconciliation(session, tenant_id) -> ReconciliationRunResult:
+     * Calls ReconciliationDetector.run() to get all findings.
+     * For each shortfall: upserts OperationalException using exception_key
+       uniqueness check (query-first strategy; compatible with SQLite and PostgreSQL).
+     * Idempotent: re-running never creates duplicate exceptions.
+     * Returns ReconciliationRunResult with full counters:
+       total_po_lines_evaluated, skipped_cancelled, skipped_future_deadline,
+       fully_satisfied, shortfalls_detected, exceptions_created, exceptions_already_existed.
+
+5. Created app/schemas/reconciliation_schemas.py:
+   - OperationalExceptionResponse: full exception detail schema.
+   - ReconciliationRunResponse: run summary with new_exceptions list.
+   - ExceptionListResponse: paginated exception list.
+
+6. Created app/api/v1/reconciliation.py:
+   - POST /api/v1/reconciliation/run: triggers detection, returns run summary.
+   - GET  /api/v1/exceptions: list with optional filters (status, location, po_number).
+   - GET  /api/v1/exceptions/{id}: single exception detail.
+
+7. Updated app/api/router.py:
+   - Registered reconciliation_router under /api/v1 alongside imports and data_quality.
+
+8. Created tests/test_reconciliation.py (24 tests):
+   TestRuleHelpers (4 unit tests):
+   - test_compute_variance_shortfall: 100 - 92 = 8.
+   - test_compute_variance_fully_satisfied: 40 - 40 = 0.
+   - test_compute_variance_over_received: 50 - 55 = -5.
+   - test_build_exception_key_format: key = "TENANT-001:RECEIPT_SHORTFALL:PO-501:1".
+
+   TestReconciliationScenarios (7 integration tests):
+   - test_scenario_po501_split_receipts_shortfall: 8 EA shortfall confirmed.
+   - test_scenario_po502_full_receipt_no_exception: no exception for 0 variance.
+   - test_scenario_po503_future_deadline_not_actionable: deadline in future, no exception.
+   - test_scenario_po504_cancelled_po_no_exception: CANCELLED PO produces no exception.
+   - test_scenario_po505_uom_conversion_box_to_ea_shortfall: 24 EA shortfall at STORE-015.
+   - test_scenario_po506_deduplicated_receipt_shortfall: 10 EA shortfall after dedup.
+   - test_all_six_scenarios_together: asserts 3 shortfalls, 1 cancelled, 1 future, 1 satisfied.
+
+   TestReconciliationIdempotency (2 tests):
+   - test_double_reconciliation_idempotent: second run creates 0 new exceptions.
+   - test_reconciliation_on_empty_db_returns_zero_findings: empty DB, 0 evaluations.
+
+   TestNeutralProvenance (4 tests - ADR-6):
+   - test_exception_type_is_neutral: type is RECEIPT_SHORTFALL, not SUPPLIER_*.
+   - test_neutral_summary_does_not_assert_blame: negation verified ("do not establish").
+   - test_missing_evidence_explicitly_documented: ASN/POD absence recorded.
+   - test_evidence_records_cite_source_ids: PO and GRN source IDs in evidence array.
+
+   TestReconciliationAPI (7 API tests):
+   - test_api_run_reconciliation_returns_summary: 3 shortfalls, 1 cancelled, 1 future.
+   - test_api_run_reconciliation_idempotent: second API call creates 0 new exceptions.
+   - test_api_list_exceptions: returns all 3 exceptions.
+   - test_api_list_exceptions_filter_by_po_number: ?po_number=PO-501 returns 1 item.
+   - test_api_list_exceptions_filter_by_location: ?location=STORE-015 returns PO-505.
+   - test_api_get_exception_by_id: full detail retrieval.
+   - test_api_get_exception_not_found: 404 for unknown ID.
+
+TEST RESULTS:
+- tests/test_reconciliation.py: 24/24 PASSED
+- Full suite (all phases): 36/36 PASSED
+
+WHY IT WAS DONE:
+- Satisfies all requirements of Task B in the assessment specification:
+  * All 6 mandatory reconciliation scenarios produce exact, verified outcomes.
+  * Deterministic frozen clock (2026-10-16T15:00:00+05:30) governs all deadline checks.
+  * Exception detection is idempotent: repeated runs are safe.
+  * Findings are epistemically neutral per ADR-6: RECEIPT_SHORTFALL, never SUPPLIER_SHORT_SHIPMENT.
+  * missing_evidence field explicitly documents absent ASN/POD data.
+  * Evidence records array cites all contributing source record IDs (PO lines + GRN lines).
+  * Deterministic exception_key prevents duplicate records even under concurrent workers.
+
+================================================================================
+STATUS: Phase 1, Phase 2, Phase 3 & Phase 4 COMPLETE. Ready for Phase 5 (Workforce Routing & Task State Machine).
+================================================================================
+
+
+[2026-10-17 16:34:00 +05:30] - STEP 9: IMPLEMENTATION OF PHASE 5 (WORKFORCE ROUTING & TASK STATE MACHINE - TASK C)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Created app/routing/policy.py (Workforce Routing Engine):
+   - Implemented RoutingPolicy.route(session, canonical_location_id) -> RoutingDecision:
+     * Two-Gate Candidate Evaluation per PLAN.md §5.1:
+       Gate 1: HRMS employment_status == 'ACTIVE'. Strict invariant: HRMS master status
+       always overrides workforce shift logs. (HR-103 edge case: shift log indicates
+       ON_SHIFT, but HRMS employment_status is INACTIVE -> immediately rejected).
+       Gate 2: WorkforceShift availability_status == 'ON_SHIFT' based on the latest
+       observation timestamp (observed_at DESC). (HR-101 edge case: employment_status
+       is ACTIVE, but shift log shows OFF_SHIFT -> rejected).
+     * Primary Assignment Tier (role == 'receiving_associate'):
+       Scans receiving associates assigned to target canonical_location_id.
+       At STORE-014: HR-101 (OFF_SHIFT) and HR-103 (INACTIVE) are rejected; HR-102
+       (Dev Shah - ACTIVE & ON_SHIFT) is selected as PRIMARY_ON_SHIFT_RECEIVING_ASSOCIATE.
+     * Fallback Assignment Tier (role == 'store_manager'):
+       If no primary receiving associate qualifies (e.g. STORE-015 has no receiving
+       associates), evaluates store managers at that location.
+       At STORE-015: HR-401 (Rohan Iyer - ACTIVE & ON_SHIFT) is selected as
+       FALLBACK_STORE_MANAGER.
+     * Unassigned Queue Tier:
+       If no eligible associate or manager exists at the location, returns assignee_id=None
+       with assignment_reason="MANUAL_ASSIGNMENT_REQUIRED" (task created in CREATED state).
+     * Auditing: RoutingDecision provides a detailed eligibility_log capturing every
+       candidate evaluated and the explicit rejection reason or selection reason.
+     * Regional Role Safety: Explicitly handles regional roles with null store assignments
+       (HR-501, regional_operations) to prevent SQL exceptions or improper store task routing.
+
+2. Created app/routing/fallback.py (Fallback Manager Resolver):
+   - Decoupled find_fallback_manager() to keep primary routing clean and enable
+     isolated unit testing of the fallback tier.
+   - Evaluates active, on-shift store managers matching canonical_location_id.
+
+3. Created app/workflows/state_machine.py (Server-Enforced Lifecycle):
+   - Implemented full state machine transition table per PLAN.md §5.2 & ARCHITECTURE.md §3.4:
+       CREATED              -> ASSIGNED
+       CREATED              -> CREATED (idempotent no-op for unassigned queue)
+       ASSIGNED             -> ACKNOWLEDGED
+       ASSIGNED             -> ASSIGNED (reassignment)
+       ACKNOWLEDGED         -> IN_PROGRESS
+       ACKNOWLEDGED         -> ASSIGNED (reassignment)
+       IN_PROGRESS          -> COMPLETED
+       IN_PROGRESS          -> BLOCKED
+       IN_PROGRESS          -> ASSIGNED (reassignment)
+       BLOCKED              -> IN_PROGRESS
+       COMPLETED            -> PENDING_VERIFICATION
+       PENDING_VERIFICATION -> VERIFIED (Terminal)
+       PENDING_VERIFICATION -> REOPENED (Supervisor rework loop)
+       REOPENED             -> IN_PROGRESS
+   - Transition Guards:
+     * assert_transition(from_state, to_state): raises InvalidStateTransitionError on
+       any illegal transition or attempt to skip intermediate lifecycle states.
+     * assert_reassignable(current_state): ensures reassignment is only allowed from
+       ASSIGNED, ACKNOWLEDGED, or IN_PROGRESS; rejected from COMPLETED or terminal states.
+     * is_idempotent_completion(...): compares stored resolution code & evidence reference
+       against incoming completion requests to distinguish identical retries from conflicting mutations.
+
+4. Created app/workflows/audit_service.py (Append-Only Audit Log Writer):
+   - Implemented record_event(...) to append immutable TaskAuditEvent records on every
+     task lifecycle mutation:
+     * Captures task_id, tenant_id, event_type, from_status, to_status, actor_id,
+       reason, payload, and UTC timestamp.
+     * Runs within the caller's transaction scope to guarantee atomic persistence.
+
+5. Created app/workflows/task_service.py (Task Domain Service):
+   - Single source of truth for all HumanTask mutations:
+     * create_task_for_exception(): generates deterministic task_key ({tenant_id}:TASK:{exception_id})
+       enforcing database-level uniqueness; invokes RoutingPolicy; initializes task in
+       ASSIGNED (if routed) or CREATED (if unassigned); logs initial audit event.
+     * acknowledge_task(): ASSIGNED -> ACKNOWLEDGED.
+     * start_task(): ACKNOWLEDGED / REOPENED -> IN_PROGRESS.
+     * complete_task(): IN_PROGRESS -> COMPLETED; requires resolution_code; implements
+       ADR-5 idempotency handling (returns existing task on identical retries without
+       duplicate audit records; raises IdempotencyConflictError on conflicting payloads).
+     * submit_for_verification(): COMPLETED -> PENDING_VERIFICATION.
+     * verify_task(): PENDING_VERIFICATION -> VERIFIED; marks associated OperationalException
+       as RESOLVED in the same transaction.
+     * reopen_task(): PENDING_VERIFICATION -> REOPENED with required reason note.
+     * reassign_task(): transitions task back to ASSIGNED with new assignee_id; writes
+       reassignment audit event.
+
+6. Created app/schemas/task_schemas.py (Pydantic Schemas):
+   - Defined request schemas: AcknowledgeRequest, StartRequest, CompleteRequest,
+     SubmitForVerificationRequest, VerifyRequest, ReopenRequest, ReassignRequest.
+   - Defined response schemas: HumanTaskResponse, HumanTaskDetailResponse (including
+     audit_events history), TaskListResponse, TaskAuditEventResponse.
+
+7. Created app/api/v1/tasks.py & Updated app/api/router.py:
+   - Implemented complete REST API for task workflows:
+     * GET  /api/v1/tasks (filter by status, assignee_id, canonical_location_id)
+     * GET  /api/v1/tasks/{id} (includes full audit history)
+     * POST /api/v1/tasks/{id}/acknowledge
+     * POST /api/v1/tasks/{id}/start
+     * POST /api/v1/tasks/{id}/complete (idempotent 200 OK on retry; 409 on conflict)
+     * POST /api/v1/tasks/{id}/submit-verification
+     * POST /api/v1/tasks/{id}/verify
+     * POST /api/v1/tasks/{id}/reopen
+     * POST /api/v1/tasks/{id}/reassign
+   - Maps domain exceptions to standard HTTP status codes:
+     InvalidStateTransitionError -> 409 Conflict
+     IdempotencyConflictError -> 409 Conflict
+     ResourceNotFoundError -> 404 Not Found
+
+8. Integrated Detection with Task Pipeline:
+   - Updated app/api/v1/reconciliation.py (run_reconciliation): automatically triggers
+     task_service.create_task_for_exception() for every newly detected shortfall exception,
+     seamlessly linking Phase 4 exception detection to Phase 5 workforce task generation.
+
+9. Created Comprehensive Test Suites (33 tests total):
+   tests/test_routing.py (11 tests across 3 classes):
+   - TestEligibilityGates (3 unit tests):
+     * test_inactive_employee_rejected_regardless_of_shift: HR-103 rejected (HRMS wins).
+     * test_off_shift_active_employee_rejected: HR-101 rejected (OFF_SHIFT).
+     * test_active_on_shift_employee_eligible: HR-102 verified eligible.
+   - TestRoutingPolicy (5 integration tests):
+     * test_store014_primary_selected_hr102: Dev Shah selected at STORE-014.
+     * test_hr101_never_assigned_to_store014: verifies OFF_SHIFT exclusion.
+     * test_hr103_never_assigned_inactive_overrides_shift: verifies INACTIVE exclusion.
+     * test_store015_no_receiving_associate_falls_back_to_hr401: Rohan Iyer selected.
+     * test_no_candidates_returns_manual_assignment_required: unassigned queue fallback.
+     * test_eligibility_log_records_all_candidates: full candidate audit verification.
+     * test_regional_role_hr501_has_null_location_no_db_error: null-location safety.
+   - TestFallbackModule (3 unit tests):
+     * test_fallback_finds_hr401_at_store015: fallback manager resolution.
+     * test_fallback_returns_none_for_unknown_location: returns None if no manager exists.
+     * test_fallback_rejects_inactive_manager: inactive manager rejected.
+
+   tests/test_task_lifecycle.py (22 tests across 5 classes):
+   - TestStateMachine (8 unit tests):
+     * Transition table completeness and terminal state enforcement.
+     * Legal transition acceptance vs illegal transition rejection.
+     * Reassignable state validation and rejection from COMPLETED / VERIFIED.
+     * Idempotent completion helper checks (identical vs conflicting payload vs status).
+   - TestTaskLifecycle (6 integration tests):
+     * test_task_created_for_shortfall_exception: creation from exception.
+     * test_task_creation_idempotent: deterministic task_key uniqueness.
+     * test_po501_task_assigned_to_hr102_at_store014: primary routing integration.
+     * test_po505_task_assigned_to_hr401_fallback_at_store015: fallback routing integration.
+     * test_full_sequential_lifecycle: ASSIGNED -> ACKNOWLEDGED -> IN_PROGRESS -> COMPLETED
+       -> PENDING_VERIFICATION -> VERIFIED; verifies OperationalException becomes RESOLVED.
+     * test_audit_trail_captures_all_transitions: complete audit event sequence.
+     * test_reopen_lifecycle: PENDING_VERIFICATION -> REOPENED -> IN_PROGRESS rework path.
+   - TestIllegalTransitions (5 unit tests):
+     * Skipping lifecycle states (ASSIGNED -> COMPLETED) raises InvalidStateTransitionError.
+     * Transitions from terminal VERIFIED state rejected.
+     * Reassignment from COMPLETED rejected; reassignment from ASSIGNED and IN_PROGRESS permitted.
+   - TestIdempotency (2 unit tests):
+     * Identical completion retry returns 200 OK without creating duplicate audit events.
+     * Conflicting completion retry raises IdempotencyConflictError.
+   - TestTaskAPI (9 REST API tests):
+     * Reconciliation creates tasks via API.
+     * Full lifecycle exercised through HTTP endpoints.
+     * Illegal transition returns HTTP 409 Conflict.
+     * Idempotent completion retry returns HTTP 200 OK with identical response.
+     * Task reassignment endpoint updates assignee and records audit log.
+     * Task detail endpoint returns full chronological audit trail.
+     * Filter endpoints by assignee_id and status.
+     * 404 response for non-existent task IDs.
+
+10. Routing Audit Log Completeness Fix (app/routing/policy.py):
+   - Problem: In test_eligibility_log_records_all_candidates, RoutingPolicy.route previously
+     returned immediately upon encountering the first eligible candidate (HR-102), which
+     prevented subsequent candidates (HR-103) in the primary tier from being evaluated and logged.
+   - Fix: Refactored the candidate evaluation loop in RoutingPolicy.route to evaluate all primary
+     candidates at the location so each candidate's rejection or eligibility reason is logged in
+     eligibility_log, while still selecting and assigning the first eligible candidate (HR-102).
+   - Result: All candidates at STORE-014 (HR-101, HR-102, HR-103) are recorded in the audit trail,
+     satisfying full transparency and auditability requirements.
+
+WHY IT WAS DONE:
+- Satisfies all requirements of Task C in the assessment specification:
+  * Strict two-gate eligibility: HRMS employment status strictly overrides workforce shift status (HR-103).
+  * Two-tier routing: primary receiving associate with fallback to store manager (HR-401 at STORE-015).
+  * Unassigned queue support: tasks without eligible candidates gracefully land in CREATED with MANUAL_ASSIGNMENT_REQUIRED.
+  * Server-enforced state machine: illegal state jumps and invalid reassignments are prevented at both domain and API tiers.
+  * Append-only audit trail: every state transition, reassignment, and actor action is permanently recorded.
+  * Robust idempotency (ADR-5): protects against duplicate task creation and handles network retry anomalies gracefully.
+  * Direct exception-task lifecycle coupling: verifying a task automatically marks the related OperationalException as RESOLVED.
+
+[2026-10-17 21:10:00 +05:30] - STEP 10: IMPLEMENTATION OF PHASE 6 (REST API LAYER & IDEMPOTENCY CONTROLS)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Created app/schemas/common_schemas.py:
+   - Implemented ErrorResponse: RFC 7807-compatible structured JSON error envelope
+     providing error_code, message, detail, details dictionary, and UTC timestamp.
+2. Created app/core/security.py:
+   - Implemented request context dependencies:
+     * get_tenant_id: extracts X-Tenant-ID header with fallback to DEFAULT_TENANT_ID ("TENANT-001").
+     * get_actor_id: extracts X-User-ID header with fallback to "SYSTEM".
+3. Extended Ingestion Engine for Native JSON Support:
+   - In app/ingestion/parser.py: added parse_records() to validate and normalize lists of dicts.
+   - In app/ingestion/service.py: added ingest_records() sharing the identical deduplication,
+     raw provenance hashing (SHA-256), and canonical mapping pipeline as ingest_csv().
+4. Hardened Ingestion API (app/api/v1/imports.py):
+   - POST /api/v1/imports/{dataset} now handles:
+     * application/json: direct list of records or {"records": [...]}
+     * multipart/form-data: standard file upload via form field 'file'
+     * text/csv: raw CSV string body
+   - Binds tenant context via get_tenant_id dependency.
+5. Implemented Detailed Exception Context API (app/schemas/reconciliation_schemas.py & app/api/v1/reconciliation.py):
+   - Defined OperationalExceptionDetailResponse, CanonicalPOLineSummary,
+     CanonicalGoodsReceiptLineSummary, and LinkedTaskSummary.
+   - GET /api/v1/exceptions/{id} returns the composite operational context:
+     * Discrepancy finding, rule version, and neutral summary
+     * Parent canonical PurchaseOrderLine details (ordered base qty, deadline, supplier)
+     * Associated canonical GoodsReceiptLines (receipt numbers, accepted base quantities, timestamps)
+     * Linked active HumanTask details (status, assignee, resolution)
+   - Updated GET /api/v1/exceptions and POST /api/v1/reconciliation/run with tenant context.
+6. Implemented Idempotency-Key Header & Retry Resilience (Task C / ADR-5):
+   - In app/workflows/task_service.py:
+     * complete_task, acknowledge_task, start_task, verify_task, and reassign_task now accept
+       and persist optional idempotency_key.
+     * Retrying any transition with identical state/payload returns existing task immediately (200 OK)
+       with ZERO duplicate TaskAuditEvent records written.
+     * Retrying complete_task with conflicting resolution data raises IdempotencyConflictError (409 Conflict).
+   - In app/api/v1/tasks.py:
+     * Injected Idempotency-Key header across mutating endpoints.
+     * Removed boilerplate local try/except blocks to let domain errors bubble directly to global handlers.
+7. Registered Global Exception Handlers & OpenAPI Documentation (app/main.py):
+   - Registered FastAPI exception handlers returning ErrorResponse:
+     * InvalidStateTransitionError -> 409 Conflict
+     * IdempotencyConflictError -> 409 Conflict
+     * ResourceNotFoundError -> 404 Not Found
+     * DataQualityError -> 422 Unprocessable Entity
+     * OPSIBException -> 400 Bad Request
+   - Added OpenAPI tags metadata (Imports & Data Quality, Reconciliation & Exceptions,
+     Tasks & Workflow, Health).
+8. Authored Comprehensive Test Suites:
+   - Created tests/test_api_v1.py (14 integration tests):
+     * JSON, CSV, and multipart file ingestion endpoints
+     * Batch status inspection by ID (200 and 404)
+     * Data quality query filtering
+     * Reconciliation run and composite exception detail endpoint
+     * Task workflow lifecycle and global RFC 7807 error envelopes (404, 409)
+   - Created tests/test_idempotency.py (6 integration tests):
+     * Assessment Design Question 1: repeated imports produce zero duplicates and no double counting.
+     * Conflicting duplicate payload isolated to DataQualityIssue without mutating canonical state.
+     * Repeated reconciliation run is strictly idempotent.
+     * Assessment Design Question 2: client timeout retry with Idempotency-Key header returns 200 OK
+       with zero duplicate audit events; conflicting retry returns 409 Conflict.
+     * Idempotent acknowledge and start retries.
+
+TEST RESULTS:
+- tests/test_api_v1.py: 14/14 PASSED
+- tests/test_idempotency.py: 6/6 PASSED
+- Full project test suite: 102/102 PASSED (0 failures, 100% pass rate)
+
+WHY IT WAS DONE:
+- Satisfies all requirements of Phase 6 in PLAN.md and ARCHITECTURE.md:
+  * Exposes clean, typed REST endpoints with complete OpenAPI metadata.
+  * Direct fulfillment of Assessment Design Questions 1 & 2 at both domain and HTTP levels.
+  * Preserves raw provenance and separates operational exceptions from actionable tasks.
+  * Robust error envelopes prevent internal error leakage and standardize client interactions.
+
+================================================================================
+STATUS: Phase 1, Phase 2, Phase 3, Phase 4, Phase 5 & Phase 6 COMPLETE. Ready for Phase 7 (AI Advisory Boundary & Citations).
+================================================================================
+
+
+[2026-10-17 21:22:00 +05:30] - STEP 11: IMPLEMENTATION OF PHASE 7 (AI ADVISORY BOUNDARY & OPENROUTER INTEGRATION - TASK D)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Updated Configuration (app/config.py):
+   - Added OpenRouter AI Gateway settings: OPENROUTER_API_KEY, OPENROUTER_MODEL (default: anthropic/claude-3.5-sonnet),
+     OPENROUTER_BASE_URL (https://openrouter.ai/api/v1), OPENROUTER_HTTP_REFERER, AI_REQUEST_TIMEOUT_SECONDS (15s),
+     and AI_PROVIDER (defaults to "openrouter" if key present, else "mock").
+2. Created AI Pydantic Schemas (app/schemas/ai_schemas.py):
+   - EvidencePackage: strictly factual input context bundling canonical PO line, goods receipt lines,
+     variance, UOM, and valid_source_record_ids (citation whitelist).
+   - InvestigationBrief: structured advisory output containing executive_summary, analysis_of_evidence,
+     missing_context, recommended_investigation_steps, cited_record_ids, confidence_score,
+     safety_warnings, and neutrality_disclaimer.
+   - InvestigationBriefResponse: API response envelope with execution metadata.
+3. Created Abstract Provider Interface (app/ai/interface.py):
+   - AIInvestigationProvider defining provider_name, model_name, and generate_brief(evidence).
+4. Implemented Deterministic Offline Mock Provider (app/ai/mock_provider.py):
+   - MockInvestigationProvider: fully deterministic, zero-cost, offline provider citing valid
+     source record IDs (e.g. ERP-PO501-L1, WMS-GRN501-A-L1) and supporting test hooks for
+     injecting simulated hallucinations.
+5. Implemented Live OpenRouter Provider (app/ai/openrouter_provider.py):
+   - OpenRouterInvestigationProvider: communicates with OpenRouter's OpenAI-compatible completions
+     endpoint (POST https://openrouter.ai/api/v1/chat/completions) using httpx.
+   - Implements structured JSON mode (response_format={"type": "json_object"}), system prompts
+     enforcing epistemic neutrality, and robust error translation into AIProviderError.
+6. Implemented Citation Guardrail & Safety Validator (app/ai/validator.py):
+   - AIGuardrailValidator: verifies every cited ID in brief.cited_record_ids against
+     evidence.valid_source_record_ids whitelist.
+   - Strips ungrounded/hallucinated IDs and appends safety warnings to brief.safety_warnings.
+   - Re-attaches mandatory epistemic neutrality disclaimer if missing or tampered with.
+7. Implemented Investigation Domain Service (app/ai/service.py):
+   - InvestigationService.assemble_evidence_package(): fetches exception and related PO/GRN lines
+     from DB; compiles the authoritative whitelist of valid source record IDs.
+   - InvestigationService.investigate(): orchestrates evidence packaging, provider execution,
+     guardrail validation, and response formatting.
+   - Strict Invariant: 100% read-only; zero database mutations.
+8. Created REST API Endpoint (app/api/v1/investigation.py & app/api/router.py):
+   - POST /api/v1/exceptions/{id}/investigate: accepts optional use_mock flag and model override.
+   - Registered under OpenAPI tag "AI Advisory Investigation".
+   - Integrated AIProviderError global exception handler in app/main.py returning HTTP 502 Bad Gateway.
+9. Authored Comprehensive Phase 7 Test Suite (tests/test_ai_boundary.py - 16 tests):
+   - TestMockProvider (1 test): verifies schema compliance, confidence, and neutrality disclaimer.
+   - TestEvidencePackaging (2 tests): verifies PO line and split receipt IDs whitelisting for PO-501 & PO-505.
+   - TestAIGuardrailValidator (4 tests): verifies grounded citations pass, single and multiple
+     hallucinated citations are stripped with safety warnings, and neutrality disclaimer restored.
+   - TestOpenRouterInvestigationProvider (5 tests): verifies mocked HTTP 200 response parsing, missing
+     API key validation, HTTP timeout translation, HTTP 429/500 error translation, and malformed JSON handling.
+   - TestSafetyAndImmutability (1 test): verifies zero database mutations before and after investigation.
+   - TestInvestigationAPI (3 tests): verifies 200 OK with mock provider, 404 for unknown exception,
+     and 502 Bad Gateway on AI provider failure.
+
+TEST RESULTS:
+- tests/test_ai_boundary.py: 16/16 PASSED
+- Full project test suite: 118/118 PASSED (0 failures, 100% pass rate)
+
+WHY IT WAS DONE:
+- Satisfies all requirements of Task D and ADR-7 in the assessment specification:
+  * OpenRouter integrated as the live AI provider while preserving offline deterministic mock provider for tests.
+  * AI is strictly restricted to an advisory copilot role (zero arithmetic authority, zero state changes).
+  * Strict citation guardrails prevent hallucinated record IDs from entering human workflows.
+  * Epistemic neutrality (ADR-6) is enforced at both prompt and validator levels.
+
+================================================================================
+STATUS: Phase 1 through Phase 7 COMPLETE.
+================================================================================
+
+
+[2026-10-17 21:37:00 +05:30] - STEP 12: IMPLEMENTATION OF PHASE 8 (COMPREHENSIVE TEST SUITE, SCENARIO VERIFICATION & FAILURE PATHS - TASK D)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Created pytest.ini:
+   - Configured test runner settings, python file patterns, strict asyncio mode,
+     and suppression of third-party deprecation warnings (e.g. Starlette TestClient httpx warning).
+   - Registered custom test markers: unit, integration, idempotency, failure_path, scenario, ai.
+2. Implemented Failure Paths & Data Quality Test Suite (tests/test_failure_paths.py - 14 tests):
+   - TestDataQualityFailures (4 tests):
+     * test_unmapped_sku_in_po_creates_data_quality_issue_and_no_exception: verifies unmapped SKU creates
+       DataQualityIssue(UNMAPPED_CROSSWALK) and NEVER generates a false business shortfall exception.
+     * test_unmapped_sku_in_receipt_creates_data_quality_issue: verifies unmapped receipt SKU is isolated.
+     * test_unmapped_location_in_po_creates_data_quality_issue: verifies unmapped location capture.
+     * test_unmapped_employee_store_creates_data_quality_issue: verifies unmapped employee store capture.
+   - TestConflictingPayloads (2 tests):
+     * test_conflicting_po_payload_flags_dq_and_does_not_mutate_state: verifies incoming conflicting quantity
+       flags DataQualityIssue(CONFLICTING_DUPLICATE) without mutating canonical state.
+     * test_conflicting_receipt_payload_flags_dq_and_does_not_mutate_state: stock levels protected.
+   - TestCorruptAndMalformedInputs (2 tests):
+     * test_malformed_csv_row_reported_in_batch_errors_without_dropping_valid_rows: verifies row-level
+       error collection while valid rows in batch are successfully ingested (partial success).
+     * test_invalid_timestamp_format_rejected_at_validation: unparseable date formats cleanly rejected.
+   - TestWorkflowFailurePaths (4 tests):
+     * test_absent_eligible_assignee_queues_task_as_manual_assignment_required: unassigned queue fallback.
+     * test_illegal_state_machine_transition_raises_409_conflict: illegal state jumps return 409 Conflict.
+     * test_reassign_from_completed_state_rejected: terminal / completed state reassignment rejected.
+     * test_reassign_request_with_empty_reason_rejected_at_api: empty reason rejected with 422.
+   - TestAIProviderFailurePaths (2 tests):
+     * test_ai_gateway_timeout_falls_back_gracefully_with_zero_db_mutation: 502 returned, 0 DB mutations.
+     * test_ai_gateway_500_error_translated_to_http_502_rfc7807: standardized RFC 7807 error envelope.
+3. Implemented End-to-End Multi-Dataset Test Suite (tests/test_scenarios_e2e.py - 4 tests):
+   - test_e2e_fixture_loading_and_all_six_scenarios: loads authentic CSV fixtures from disk;
+     verifies PO-501 (8 EA shortfall), PO-502 (satisfied), PO-503 (future deadline), PO-504 (cancelled),
+     PO-505 (24 EA shortfall with 12x BOX conversion), and PO-506 (10 EA shortfall after GRN dedup).
+   - test_e2e_workforce_routing_and_full_task_lifecycle: verifies HR-102 (STORE-014 primary) and
+     HR-401 (STORE-015 manager fallback); advances task from ASSIGNED -> ACK -> IN_PROGRESS ->
+     COMPLETED -> PENDING_VERIFICATION -> VERIFIED; verifies OperationalException marked RESOLVED;
+     verifies append-only TaskAuditEvent sequence.
+   - test_e2e_ai_advisory_investigation_brief: verifies AI copilot advisory output, strict citation
+     whitelist adherence against valid source IDs, and epistemic neutrality disclaimer.
+   - test_e2e_repeat_import_and_reconciliation_idempotency: verifies second import of all 6 CSVs
+     produces 0 duplicate entities and zero double counting; second reconciliation run creates 0 new tasks.
+4. Created Automated Verification Runner (scripts/run_verification.py):
+   - Standalone CLI utility for assessment reviewers and technical walkthroughs.
+   - Executes full pytest matrix, checks all 6 scenario invariants against frozen clock,
+     and formats an executive summary table verifying 100% submission readiness.
+
+TEST RESULTS:
+- tests/test_failure_paths.py: 14/14 PASSED
+- tests/test_scenarios_e2e.py: 4/4 PASSED
+- Full project test suite: 136/136 PASSED (0 failures, 100% pass rate in 4.45s)
+- Automated verification script (python scripts/run_verification.py): ALL INVARIANTS PASSED
+
+WHY IT WAS DONE:
+- Satisfies all requirements of Task D and the Assessment Submission Checklist:
+  * Proves service resilience under messy data, unmapped codes, and conflicting transmissions.
+  * Direct automated verification of all 6 required scenario interpretations.
+  * Lineage and provenance verified from raw payloads through to canonical exceptions and tasks.
+  * Demonstrates full operational reliability without relying on external AI tools.
+
+================================================================================
+STATUS: Phase 1 through Phase 8 COMPLETE.
+================================================================================
+
+
+[2026-10-17 21:51:00 +05:30] - STEP 13: IMPLEMENTATION OF PHASE 9 (DOCUMENTATION, RUNBOOK & WALKTHROUGH READINESS)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Hardened Intra-Batch Deduplication in Ingestion Engine (app/ingestion/service.py):
+   - Added seen_in_batch dictionary tracking to recognize duplicate source IDs (such as ERP-PO506-L1
+     and WMS-GRN506-A-L1) immediately in memory before database flush.
+   - Prevents SQLite UNIQUE constraint failures when identical duplicate rows appear in the same batch.
+2. Created CLI Shortfall Reconciliation Tool (scripts/run_reconciliation.py):
+   - Standalone CLI utility triggering DetectionService against frozen evaluation clock (2026-10-16T15:00:00+05:30).
+   - Automatically provisions HumanTask records via task_service.create_task_for_exception().
+   - Formats clean terminal ASCII table showing PO line, product, location, ordered qty, received qty,
+     variance, assignee, and routing reason (PO-501 -> HR-102, PO-505 -> HR-401, PO-506 -> HR-102).
+3. Created Static OpenAPI Exporter & Schema (scripts/export_openapi.py & openapi.json):
+   - Exported OpenAPI 3.1 specification (17 endpoints, 25 schema models) to static openapi.json
+     for zero-server offline contract inspection.
+4. Authored Production-Grade README.md:
+   - Comprehensive documentation covering project overview, architecture, two-tier storage model (ADR-1),
+     quickstart setup, the 6 core evaluation scenarios, REST API reference with curl examples,
+     and production hardening roadmap (PostgreSQL RLS, distributed locking, Kafka streaming, Vault secrets).
+   - Definitive, in-depth answers to both mandatory Assessment Design Questions:
+     * Question 1: Preventing duplicate business effects on concurrent / retried imports.
+     * Question 2: Client timeout during task completion and idempotent retry handling.
+   - Complete AI tooling disclosure per Section 07 of the assessment specification.
+5. Authored Candidate Review Runbook & Interview Defense Guide (RUNBOOK.md):
+   - Step-by-step terminal demonstration workflow for live review.
+   - Comprehensive architectural answers to the 6 technical walkthrough discussion topics (Section 08).
+   - Live code modification playbook providing concrete implementations for configurable tolerance,
+     new task lifecycle states, regional fallback routing, and ASN short-shipment modeling.
+6. Executed Complete Verification Suite:
+   - python scripts/run_reconciliation.py: All 3 shortfalls detected and routed correctly.
+   - pytest: 136/136 tests passing in 4.39s across 10 test modules.
+   - python scripts/run_verification.py: All 6 scenario invariants confirmed (>> SUBMISSION READY <<).
+7. Updated PLAN.md to reflect 100% completion of all 9 phases.
+
+WHY IT WAS DONE:
+- Satisfies all requirements of Phase 9, Section 07 (Submission Deliverables), and Section 08 (Review Process):
+  * Delivers a polished, production-grade repository ready for evaluation by engineering reviewers.
+  * Ensures zero-friction clone-and-run execution on any machine.
+  * Equips the candidate with complete technical defense arguments and code modification recipes.
+
+================================================================================
+ALL PHASES (1 THROUGH 9) COMPLETE. ASSESSMENT SUBMISSION READY.
+================================================================================
+
+

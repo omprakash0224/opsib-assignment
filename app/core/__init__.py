@@ -1,0 +1,3 @@
+"""
+OPSIB Core Module.
+"""
