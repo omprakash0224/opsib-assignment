@@ -58,3 +58,8 @@ class IneligibleAssigneeError(OPSIBException):
     """Raised when an employee is ineligible for task assignment or reassignment."""
     pass
 
+
+class AuthorizationError(OPSIBException):
+    """Raised when an actor lacks permission to perform an action on a task."""
+    pass
+

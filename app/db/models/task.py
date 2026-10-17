@@ -28,6 +28,7 @@ class HumanTask(Base):
     resolution_code = Column(String(64), nullable=True)
     resolution_evidence_ref = Column(String(128), nullable=True)
     resolution_notes = Column(Text, nullable=True)
+    completed_by = Column(String(64), nullable=True, index=True)
 
     idempotency_key = Column(String(128), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

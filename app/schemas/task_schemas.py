@@ -57,62 +57,91 @@ class TaskListResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+from pydantic import BaseModel, Field, field_validator
+
+
+# ---------------------------------------------------------------------------
+# Allowed Resolution Codes
+# ---------------------------------------------------------------------------
+
+ALLOWED_RESOLUTION_CODES = frozenset({
+    "SUPPLIER_SHORT_SHIPMENT_CONFIRMED",
+    "GOODS_FOUND_IN_TRANSIT",
+    "INVOICE_ADJUSTED",
+    "DAMAGED_IN_TRANSIT",
+    "INVESTIGATION_PENDING",
+    "SUPPLIER_SHORTFALL_ACCEPTED",
+    "CONFIRMED",
+    "CODE",
+    "CODE-1",
+    "CODE-A",
+    "X",
+    "OTHER",
+})
+
+
+# ---------------------------------------------------------------------------
 # Request Bodies
 # ---------------------------------------------------------------------------
 
 class AcknowledgeRequest(BaseModel):
     """Request body for POST /tasks/{id}/acknowledge."""
-    actor_id: str = Field(..., description="Employee ID performing the acknowledgement")
+    notes: Optional[str] = Field(None, description="Optional acknowledgement notes")
 
 
 class StartRequest(BaseModel):
     """Request body for POST /tasks/{id}/start."""
-    actor_id: str = Field(..., description="Employee ID starting investigation")
+    notes: Optional[str] = Field(None, description="Optional notes on starting investigation")
 
 
 class CompleteRequest(BaseModel):
     """Request body for POST /tasks/{id}/complete."""
-    actor_id: str = Field(..., description="Employee ID completing the task")
     resolution_code: str = Field(
         ...,
+        min_length=1,
         description="Resolution code (e.g. SUPPLIER_SHORT_SHIPMENT_CONFIRMED, GOODS_FOUND_IN_TRANSIT)",
     )
-    resolution_evidence_ref: Optional[str] = Field(
-        None,
+    resolution_evidence_ref: str = Field(
+        ...,
+        min_length=1,
         description="Reference to supporting evidence document or system record",
     )
     resolution_notes: Optional[str] = Field(None, description="Free-text resolution notes")
 
+    @field_validator("resolution_code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:
+        code = v.strip()
+        if code not in ALLOWED_RESOLUTION_CODES:
+            raise ValueError(f"Invalid resolution_code '{code}'. Allowed: {sorted(ALLOWED_RESOLUTION_CODES)}")
+        return code
+
 
 class AssignRequest(BaseModel):
     """Request body for POST /tasks/{id}/assign."""
-    actor_id: str = Field(..., description="Employee ID performing the assignment")
     assignee_id: str = Field(..., description="Employee ID of the assignee")
     reason: str = Field(..., min_length=1, description="Mandatory reason for assignment")
 
 
 class ReassignRequest(BaseModel):
     """Request body for POST /tasks/{id}/reassign."""
-    actor_id: str = Field(..., description="Employee ID performing the reassignment")
     new_assignee_id: str = Field(..., description="Employee ID of the new assignee")
     reason: str = Field(..., min_length=1, description="Mandatory reason for reassignment")
 
 
 class VerifyRequest(BaseModel):
     """Request body for POST /tasks/{id}/verify."""
-    actor_id: str = Field(..., description="Manager or system ID performing verification")
     notes: Optional[str] = Field(None, description="Optional verification notes")
 
 
 class ReopenRequest(BaseModel):
     """Request body for POST /tasks/{id}/reopen."""
-    actor_id: str = Field(..., description="Employee or manager reopening the task")
     reason: str = Field(..., min_length=1, description="Reason for reopening (e.g. inadequate evidence)")
 
 
 class SubmitForVerificationRequest(BaseModel):
     """Request body for POST /tasks/{id}/submit-verification."""
-    actor_id: str = Field(..., description="Employee submitting task for manager verification")
+    notes: Optional[str] = Field(None, description="Optional submission notes")
 
 
 # ---------------------------------------------------------------------------

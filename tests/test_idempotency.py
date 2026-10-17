@@ -137,8 +137,8 @@ class TestClientTimeoutAndRetrySafety:
         client.post("/api/v1/reconciliation/run")
         tasks = client.get("/api/v1/tasks").json()["items"]
         tid = tasks[0]["id"]
-        client.post(f"/api/v1/tasks/{tid}/acknowledge", json={"actor_id": "HR-102"})
-        client.post(f"/api/v1/tasks/{tid}/start", json={"actor_id": "HR-102"})
+        client.post(f"/api/v1/tasks/{tid}/acknowledge", headers={"X-User-ID": "HR-102"})
+        client.post(f"/api/v1/tasks/{tid}/start", headers={"X-User-ID": "HR-102"})
         return tid
 
     def test_client_timeout_retry_with_same_idempotency_key(self, client: TestClient, db_session):
@@ -148,9 +148,8 @@ class TestClientTimeoutAndRetrySafety:
         and produces ZERO duplicate audit events.
         """
         task_id = self._setup_task(client)
-        headers = {"Idempotency-Key": "IDEM-UUID-9999"}
+        headers = {"Idempotency-Key": "IDEM-UUID-9999", "X-User-ID": "HR-102"}
         payload = {
-            "actor_id": "HR-102",
             "resolution_code": "SUPPLIER_SHORT_SHIPMENT_CONFIRMED",
             "resolution_evidence_ref": "CARRIER-POD-404-NOT-FOUND",
             "resolution_notes": "Supplier confirmed short pack at dock",
@@ -185,17 +184,15 @@ class TestClientTimeoutAndRetrySafety:
         """
         task_id = self._setup_task(client)
         client.post(f"/api/v1/tasks/{task_id}/complete", json={
-            "actor_id": "HR-102",
             "resolution_code": "SUPPLIER_SHORT_SHIPMENT_CONFIRMED",
             "resolution_evidence_ref": "REF-ORIGINAL",
-        })
+        }, headers={"X-User-ID": "HR-102"})
 
         # Retry with different resolution code
         resp = client.post(f"/api/v1/tasks/{task_id}/complete", json={
-            "actor_id": "HR-102",
             "resolution_code": "GOODS_FOUND_IN_TRANSIT",  # Conflicting!
             "resolution_evidence_ref": "REF-DIFFERENT",
-        })
+        }, headers={"X-User-ID": "HR-102"})
         assert resp.status_code == 409
         data = resp.json()
         assert data["error_code"] == "IDEMPOTENCY_CONFLICT"
@@ -206,6 +203,6 @@ class TestClientTimeoutAndRetrySafety:
         task_id = self._setup_task(client)  # Already in IN_PROGRESS
 
         # Repeating start on IN_PROGRESS task
-        r_start = client.post(f"/api/v1/tasks/{task_id}/start", json={"actor_id": "HR-102"})
+        r_start = client.post(f"/api/v1/tasks/{task_id}/start", headers={"X-User-ID": "HR-102"})
         assert r_start.status_code == 200
         assert r_start.json()["status"] == "IN_PROGRESS"

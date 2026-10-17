@@ -39,6 +39,7 @@ from app.workflows.state_machine import (
     is_idempotent_completion,
     ALLOWED_TRANSITIONS,
 )
+from app.schemas.task_schemas import ALLOWED_RESOLUTION_CODES
 
 
 # Default task due window (hours from detection)
@@ -210,10 +211,20 @@ def complete_task(
 
     assert_transition(task.status, "COMPLETED")
 
+    if not resolution_code or not resolution_code.strip():
+        raise IneligibleAssigneeError("resolution_code must be non-empty.")
+    if not resolution_evidence_ref or not resolution_evidence_ref.strip():
+        raise IneligibleAssigneeError("resolution_evidence_ref must be non-empty.")
+    if resolution_code not in ALLOWED_RESOLUTION_CODES:
+        raise IneligibleAssigneeError(
+            f"Invalid resolution_code '{resolution_code}'. Allowed: {sorted(ALLOWED_RESOLUTION_CODES)}"
+        )
+
     prev_status = task.status
     task.resolution_code = resolution_code
     task.resolution_evidence_ref = resolution_evidence_ref
     task.resolution_notes = resolution_notes
+    task.completed_by = actor_id
     if idempotency_key:
         task.idempotency_key = idempotency_key
 
@@ -428,9 +439,10 @@ def reassign_task(
 def get_task_with_audit(
     session: Session,
     task_id: str,
+    tenant_id: Optional[str] = None,
 ) -> tuple[HumanTask, List[TaskAuditEvent]]:
-    """Retrieve a task and its full audit trail."""
-    task = _get_task_or_404(session, task_id)
+    """Retrieve a task and its full audit trail, scoped by tenant if specified."""
+    task = _get_task_or_404(session, task_id, tenant_id=tenant_id)
     events = (
         session.query(TaskAuditEvent)
         .filter_by(task_id=task_id)
@@ -462,8 +474,13 @@ def list_tasks(
 # Internal Helpers
 # ---------------------------------------------------------------------------
 
-def _get_task_or_404(session: Session, task_id: str) -> HumanTask:
-    task = session.query(HumanTask).filter_by(id=task_id).first()
+def _get_task_or_404(
+    session: Session, task_id: str, tenant_id: Optional[str] = None
+) -> HumanTask:
+    query = session.query(HumanTask).filter_by(id=task_id)
+    if tenant_id:
+        query = query.filter_by(tenant_id=tenant_id)
+    task = query.first()
     if not task:
         raise ResourceNotFoundError(f"Task '{task_id}' not found.")
     return task

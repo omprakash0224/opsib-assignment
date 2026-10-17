@@ -18,8 +18,9 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.db.models.task import HumanTask
+from app.db.models.canonical import Employee
 from app.db.models.audit import TaskAuditEvent
-from app.core.security import get_tenant_id
+from app.core.security import get_tenant_id, get_current_actor, authorize
 from app.core.exceptions import (
     InvalidStateTransitionError,
     IdempotencyConflictError,
@@ -113,8 +114,12 @@ def list_tasks(
     response_model=HumanTaskDetailResponse,
     summary="Task detail with full audit history",
 )
-def get_task(task_id: str, db: Session = Depends(get_db)):
-    task, events = task_service.get_task_with_audit(db, task_id)
+def get_task(
+    task_id: str,
+    tenant_id: str = Depends(get_tenant_id),
+    db: Session = Depends(get_db),
+):
+    task, events = task_service.get_task_with_audit(db, task_id, tenant_id=tenant_id)
     resp = _task_to_response(task)
     return HumanTaskDetailResponse(
         **resp.model_dump(),
@@ -129,12 +134,15 @@ def get_task(task_id: str, db: Session = Depends(get_db)):
 )
 def acknowledge_task(
     task_id: str,
-    body: AcknowledgeRequest,
+    body: Optional[AcknowledgeRequest] = None,
+    actor: Employee = Depends(get_current_actor),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
 ):
+    task = task_service._get_task_or_404(db, task_id)
+    authorize(db, task, actor, "acknowledge")
     task = task_service.acknowledge_task(
-        db, task_id, actor_id=body.actor_id, idempotency_key=idempotency_key
+        db, task_id, actor_id=actor.employee_id, idempotency_key=idempotency_key
     )
     return _task_to_response(task)
 
@@ -146,12 +154,15 @@ def acknowledge_task(
 )
 def start_task(
     task_id: str,
-    body: StartRequest,
+    body: Optional[StartRequest] = None,
+    actor: Employee = Depends(get_current_actor),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
 ):
+    task = task_service._get_task_or_404(db, task_id)
+    authorize(db, task, actor, "start")
     task = task_service.start_task(
-        db, task_id, actor_id=body.actor_id, idempotency_key=idempotency_key
+        db, task_id, actor_id=actor.employee_id, idempotency_key=idempotency_key
     )
     return _task_to_response(task)
 
@@ -164,13 +175,16 @@ def start_task(
 def complete_task(
     task_id: str,
     body: CompleteRequest,
+    actor: Employee = Depends(get_current_actor),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
 ):
+    task = task_service._get_task_or_404(db, task_id)
+    authorize(db, task, actor, "complete")
     task = task_service.complete_task(
         db,
         task_id,
-        actor_id=body.actor_id,
+        actor_id=actor.employee_id,
         resolution_code=body.resolution_code,
         resolution_evidence_ref=body.resolution_evidence_ref,
         resolution_notes=body.resolution_notes,
@@ -186,12 +200,15 @@ def complete_task(
 )
 def submit_for_verification(
     task_id: str,
-    body: SubmitForVerificationRequest,
+    body: Optional[SubmitForVerificationRequest] = None,
+    actor: Employee = Depends(get_current_actor),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
 ):
+    task = task_service._get_task_or_404(db, task_id)
+    authorize(db, task, actor, "submit-verification")
     task = task_service.submit_for_verification(
-        db, task_id, actor_id=body.actor_id, idempotency_key=idempotency_key
+        db, task_id, actor_id=actor.employee_id, idempotency_key=idempotency_key
     )
     return _task_to_response(task)
 
@@ -203,12 +220,16 @@ def submit_for_verification(
 )
 def verify_task(
     task_id: str,
-    body: VerifyRequest,
+    body: Optional[VerifyRequest] = None,
+    actor: Employee = Depends(get_current_actor),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
 ):
+    task = task_service._get_task_or_404(db, task_id)
+    authorize(db, task, actor, "verify")
+    notes = body.notes if body else None
     task = task_service.verify_task(
-        db, task_id, actor_id=body.actor_id, notes=body.notes, idempotency_key=idempotency_key
+        db, task_id, actor_id=actor.employee_id, notes=notes, idempotency_key=idempotency_key
     )
     return _task_to_response(task)
 
@@ -221,9 +242,12 @@ def verify_task(
 def reopen_task(
     task_id: str,
     body: ReopenRequest,
+    actor: Employee = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ):
-    task = task_service.reopen_task(db, task_id, actor_id=body.actor_id, reason=body.reason)
+    task = task_service._get_task_or_404(db, task_id)
+    authorize(db, task, actor, "reopen")
+    task = task_service.reopen_task(db, task_id, actor_id=actor.employee_id, reason=body.reason)
     return _task_to_response(task)
 
 
@@ -236,13 +260,16 @@ def reopen_task(
 def assign_task(
     task_id: str,
     body: AssignRequest,
+    actor: Employee = Depends(get_current_actor),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
 ):
+    task = task_service._get_task_or_404(db, task_id)
+    authorize(db, task, actor, "assign")
     task = task_service.assign_task(
         db,
         task_id,
-        actor_id=body.actor_id,
+        actor_id=actor.employee_id,
         assignee_id=body.assignee_id,
         reason=body.reason,
         idempotency_key=idempotency_key,
@@ -259,13 +286,16 @@ def assign_task(
 def reassign_task(
     task_id: str,
     body: ReassignRequest,
+    actor: Employee = Depends(get_current_actor),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
 ):
+    task = task_service._get_task_or_404(db, task_id)
+    authorize(db, task, actor, "reassign")
     task = task_service.reassign_task(
         db,
         task_id,
-        actor_id=body.actor_id,
+        actor_id=actor.employee_id,
         new_assignee_id=body.new_assignee_id,
         reason=body.reason,
         idempotency_key=idempotency_key,

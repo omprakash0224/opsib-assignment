@@ -1,7 +1,7 @@
 # OPSIB Retail Exception Detection & Task Reliability Engine
 **Backend Engineering Assessment | Production Implementation**
 
-[![Test Suite](https://img.shields.io/badge/pytest-136%20passed%20(100%25)-brightgreen.svg)](#7-automated-test-suite--verification)
+[![Test Suite](https://img.shields.io/badge/pytest-155%20passed%20(100%25)-brightgreen.svg)](#7-automated-test-suite--verification)
 [![Rule Version](https://img.shields.io/badge/rule%20version-v1.0.0-blue.svg)](#2-system-architecture--design-principles)
 [![Evaluation Clock](https://img.shields.io/badge/frozen%20time-2026--10--16T15%3A00%3A00%2B05%3A30-orange.svg)](#2-system-architecture--design-principles)
 [![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](#3-quickstart--execution-guide)
@@ -287,7 +287,7 @@ Our system implements **safe idempotent completion semantics via `Idempotency-Ke
 
 ## 6. REST API Reference
 
-The application provides 17 strongly-typed REST endpoints documented under OpenAPI 3.1:
+The application provides 18 strongly-typed REST endpoints documented under OpenAPI 3.1:
 
 | Tag | Method | Path | Description |
 | :--- | :--- | :--- | :--- |
@@ -298,16 +298,50 @@ The application provides 17 strongly-typed REST endpoints documented under OpenA
 | | `GET` | `/api/v1/exceptions` | List exceptions with filters (`status`, `location`, `po_number`). |
 | | `GET` | `/api/v1/exceptions/{id}` | Composite exception detail with canonical PO line, receipt lines, and linked task. |
 | **Tasks & Workflow** | `GET` | `/api/v1/tasks` | List tasks filtered by `assignee_id`, `status`, and `canonical_location_id`. |
-| | `GET` | `/api/v1/tasks/{id}` | Task detail with full chronological audit event trail. |
+| | `GET` | `/api/v1/tasks/{id}` | Task detail with full chronological audit event trail (tenant-isolated). |
+| | `POST` | `/api/v1/tasks/{id}/assign` | Assign queued manual task: `CREATED` $\rightarrow$ `ASSIGNED`. |
 | | `POST` | `/api/v1/tasks/{id}/acknowledge`| Transition task: `ASSIGNED` $\rightarrow$ `ACKNOWLEDGED`. |
 | | `POST` | `/api/v1/tasks/{id}/start` | Transition task: `ACKNOWLEDGED` $\rightarrow$ `IN_PROGRESS`. |
 | | `POST` | `/api/v1/tasks/{id}/complete` | Transition task: `IN_PROGRESS` $\rightarrow$ `COMPLETED` (idempotent retry safe). |
 | | `POST` | `/api/v1/tasks/{id}/reassign` | Reassign task with mandatory reason note: $\rightarrow$ `ASSIGNED`. |
 | | `POST` | `/api/v1/tasks/{id}/submit-verification` | Transition task: `COMPLETED` $\rightarrow$ `PENDING_VERIFICATION`. |
-| | `POST` | `/api/v1/tasks/{id}/verify` | Verify task: `PENDING_VERIFICATION` $\rightarrow$ `VERIFIED` (closes parent exception as `RESOLVED`). |
+| | `POST` | `/api/v1/tasks/{id}/verify` | Verify task: `PENDING_VERIFICATION` $\rightarrow$ `VERIFIED` (resolves parent exception). |
 | | `POST` | `/api/v1/tasks/{id}/reopen` | Supervisor rework loop: `PENDING_VERIFICATION` $\rightarrow$ `REOPENED`. |
 | **AI Advisory Investigation** | `POST` | `/api/v1/exceptions/{id}/investigate` | Generate grounded advisory brief via OpenRouter with citation guardrails. |
 | **Health** | `GET` | `/health` | Health check reporting service status, active rule version, and frozen clock. |
+
+### Actor Identity, Authorization & Verification Standards
+
+> [!NOTE]
+> **Authentication Notice:** In this assessment implementation, header-based actor identification via the `X-User-ID` header is an intentional, lightweight stand-in for real enterprise authentication (e.g., OAuth2 / OpenID Connect JWT bearer tokens) in production.
+
+#### 1. Actor Identity Validation
+- All mutating task lifecycle endpoints (`acknowledge`, `start`, `complete`, `submit-verification`, `verify`, `reopen`, `assign`, `reassign`) require the `X-User-ID` HTTP header.
+- **HTTP 401 Unauthorized:** Raised immediately if the `X-User-ID` header is missing, blank, or refers to an employee ID not found in the employee roster.
+- **HTTP 403 Forbidden:** Raised if the employee exists but is `INACTIVE` in HRMS, or if the employee belongs to a different tenant.
+
+#### 2. Fine-Grained Authorization Matrix (`authorize`)
+Permissions are centrally enforced in `app/core/security.py`:
+- **Assignee-Only Actions (`acknowledge`, `start`, `complete`, `submit-verification`):** Must be performed strictly by the currently assigned employee (`actor.employee_id == task.assignee_id`). Other employees receive `403 Forbidden`.
+- **Assignment & Escalation (`assign`, `reopen`):** Restricted to managerial roles (`store_manager`, `operations_manager`, `regional_operations_specialist`, `regional_manager`) with jurisdiction over the task's canonical location or region.
+- **Reassignment (`reassign`):** Permitted either for authorized managers (reallocation) or for the current assignee (self-handoff).
+- **Verification Separation of Duties (`verify`):**
+  - Actor must possess a manager role with jurisdiction at the task's location or region.
+  - **Two-Person Rule:** The actor verifying the task **must not be the actor who marked the task COMPLETED** (`completed_by`). Self-verification is strictly blocked with `403 Forbidden` to ensure audit integrity and fraud prevention.
+
+#### 3. Task Completion & Verification Criteria
+- Task completion requires:
+  1. A valid `resolution_code` selected from the allowed enum:
+     - `SUPPLIER_SHORT_SHIPMENT_CONFIRMED`
+     - `GOODS_FOUND_IN_TRANSIT`
+     - `DAMAGED_IN_RECEIVING`
+     - `INVENTORY_DISCREPANCY_WRITTEN_OFF`
+     - `SUPPLIER_REPLACEMENT_ACCEPTED`
+  2. A non-empty `resolution_evidence_ref` (e.g., carrier POD tracking, bill of lading, physical dock search log).
+- Verification transitions the task to `VERIFIED` and automatically cascades to mark the linked `OperationalException` as `RESOLVED` with timestamp `resolved_at`.
+
+#### 4. Tenant Isolation
+- `GET /tasks/{id}` filters by tenant context (`X-Tenant-ID`). Attempting to access tasks belonging to another tenant returns `HTTP 404 Not Found`.
 
 ### Concrete Workflow Examples (cURL)
 
@@ -347,11 +381,37 @@ curl -X POST "http://localhost:8000/api/v1/tasks/702ddef1-ef7b-4caf-9e21-463d0d2
   -d '{
     "resolution_code": "SUPPLIER_SHORT_SHIPMENT_CONFIRMED",
     "resolution_evidence_ref": "CARRIER-POD-REF-992",
-    "notes": "Dock search complete; supplier confirmed partial shipment."
+    "resolution_notes": "Dock search complete; supplier confirmed partial shipment."
   }'
 ```
 
-#### 4. Request Grounded AI Investigation Summary
+#### 4. Submit for Verification & Verify Task (Separation of Duties)
+```bash
+# Assignee submits task for review
+curl -X POST "http://localhost:8000/api/v1/tasks/702ddef1-ef7b-4caf-9e21-463d0d2c6eae/submit-verification" \
+  -H "X-User-ID: HR-102"
+
+# Store Manager verifies task (must be different from HR-102)
+curl -X POST "http://localhost:8000/api/v1/tasks/702ddef1-ef7b-4caf-9e21-463d0d2c6eae/verify" \
+  -H "Content-Type: application/json" \
+  -H "X-User-ID: HR-201" \
+  -d '{
+    "notes": "Verified dock logs and confirmed with supplier account representative."
+  }'
+```
+
+#### 5. Assign Task from Manual Queue
+```bash
+curl -X POST "http://localhost:8000/api/v1/tasks/cfb34b10-e33c-417f-9446-4f521cd39e79/assign" \
+  -H "Content-Type: application/json" \
+  -H "X-User-ID: HR-501" \
+  -d '{
+    "assignee_id": "HR-501",
+    "reason": "Supervisor manual assignment to regional operations specialist"
+  }'
+```
+
+#### 6. Request Grounded AI Investigation Summary
 ```bash
 curl -X POST "http://localhost:8000/api/v1/exceptions/857e9179-8ac4-405a-a011-4e5daa7832cc/investigate" \
   -H "Content-Type: application/json" \
@@ -364,27 +424,28 @@ curl -X POST "http://localhost:8000/api/v1/exceptions/857e9179-8ac4-405a-a011-4e
 
 ## 7. Automated Test Suite & Verification
 
-The project includes **136 automated tests** providing 100% scenario coverage, failure-path verification, and retry resilience:
+The project includes **155 automated tests** providing 100% scenario coverage, failure-path verification, and retry resilience:
 
 ```text
 ============================= test session starts =============================
 platform win32 -- Python 3.13.15, pytest-9.1.1, pluggy-1.7.0
 rootdir: D:\opsib-assignment
 plugins: anyio-4.15.1, asyncio-1.4.0
-collected 136 items
+collected 155 items
 
-tests\test_ai_boundary.py ................                               [ 11%]
-tests\test_api_v1.py ..............                                      [ 22%]
-tests\test_failure_paths.py ..............                               [ 32%]
-tests\test_idempotency.py ......                                         [ 36%]
-tests\test_ingestion.py ........                                         [ 42%]
-tests\test_models.py ....                                                [ 45%]
-tests\test_reconciliation.py ........................                    [ 63%]
-tests\test_routing.py .............                                      [ 72%]
-tests\test_scenarios_e2e.py ....                                         [ 75%]
-tests\test_task_lifecycle.py .................................           [100%]
+tests\test_ai_boundary.py ................                               [ 10%]
+tests\test_api_v1.py ..............                                      [ 18%]
+tests\test_failure_paths.py ..............                               [ 27%]
+tests\test_idempotency.py ......                                         [ 31%]
+tests\test_ingestion.py ........                                         [ 36%]
+tests\test_models.py ....                                                [ 39%]
+tests\test_reconciliation.py ........................                    [ 54%]
+tests\test_routing.py .............                                      [ 63%]
+tests\test_scenarios_e2e.py ....                                         [ 65%]
+tests\test_task_lifecycle.py ........................................... [ 93%]
+.......                                                                  [100%]
 
-======================= 136 passed, 1 warning in 4.39s =======================
+======================= 155 passed, 4 warnings in 8.11s =======================
 ```
 
 ### Test Modules Breakdown
@@ -392,7 +453,7 @@ tests\test_task_lifecycle.py .................................           [100%]
 | Test Module | Tests | Focus Area & Invariants Tested |
 | :--- | :--- | :--- |
 | [`test_reconciliation.py`](file:///d:/opsib-assignment/tests/test_reconciliation.py) | 24 | All 6 mandatory PO scenarios; zero tolerance; neutral summaries (ADR-6). |
-| [`test_task_lifecycle.py`](file:///d:/opsib-assignment/tests/test_task_lifecycle.py) | 33 | State machine transitions; terminal states; illegal transition rejection; audit log sequence. |
+| [`test_task_lifecycle.py`](file:///d:/opsib-assignment/tests/test_task_lifecycle.py) | 50 | State machine transitions; terminal states; illegal transition rejection; audit log sequence; resolution validation; assignment eligibility; Bug 4 actor identity & authorization matrix. |
 | [`test_routing.py`](file:///d:/opsib-assignment/tests/test_routing.py) | 13 | HRMS active gate overriding shift status (HR-103); off-shift filter (HR-101); store manager fallback (HR-401); regional role null location (HR-501). |
 | [`test_ai_boundary.py`](file:///d:/opsib-assignment/tests/test_ai_boundary.py) | 16 | OpenRouter client; mock provider; citation whitelist validation; hallucinated ID stripping; zero DB write verification. |
 | [`test_failure_paths.py`](file:///d:/opsib-assignment/tests/test_failure_paths.py) | 14 | Unmapped SKUs and locations isolated to `DataQualityIssue`; conflicting duplicate payload safety; corrupt rows; AI gateway timeout recovery. |

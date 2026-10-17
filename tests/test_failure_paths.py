@@ -355,10 +355,10 @@ class TestWorkflowFailurePaths:
         res = client.post(
             f"/api/v1/tasks/{task.id}/complete",
             json={
-                "actor_id": "HR-102",
                 "resolution_code": "SUPPLIER_SHORT_SHIPMENT_CONFIRMED",
                 "resolution_evidence_ref": "DOCK-SEARCH-01",
             },
+            headers={"X-User-ID": "HR-102"},
         )
         assert res.status_code == 409
         body = res.json()
@@ -409,10 +409,10 @@ class TestWorkflowFailurePaths:
         res = client.post(
             f"/api/v1/tasks/{task.id}/reassign",
             json={
-                "actor_id": "SYSTEM",
                 "new_assignee_id": "HR-102",
                 "reason": "",  # Empty string rejected by Pydantic min_length=1
             },
+            headers={"X-User-ID": "HR-201"},
         )
         assert res.status_code == 422
 

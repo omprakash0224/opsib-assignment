@@ -894,5 +894,63 @@ WHY IT WAS DONE:
   routing gate checks with a unified, DRY check_assignable engine.
 
 
+[2026-10-18 00:55:00 +05:30] - STEP 17: RESOLUTION OF BUG 4 (ACTOR IDENTITY & AUTHORIZATION)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Reproduced Bug 4 by writing tests in tests/test_task_lifecycle.py per FIX.md ground rules:
+   - Created TestBug4ActorIdentityAndAuthorization with 8 test cases:
+     * test_missing_x_user_id_header_returns_401: verified mutating task endpoint without X-User-ID returns 401.
+     * test_unknown_actor_id_returns_401: verified non-existent actor returns 401.
+     * test_inactive_actor_returns_403: verified inactive employee HR-103 returns 403.
+     * test_non_assignee_cannot_acknowledge_or_complete_task_returns_403: verified employee other than assignee returns 403.
+     * test_same_user_completes_then_verifies_rejected_with_403: verified two-person separation of duties blocks self-verification.
+     * test_manager_at_another_location_cannot_verify_returns_403: verified store manager at another store returns 403.
+     * test_invalid_resolution_code_or_empty_evidence_ref_rejected_422: verified unapproved resolution code returns 422.
+     * test_cross_tenant_get_task_returns_404: verified tenant isolation returns 404 for tasks of another tenant.
+2. Implemented Domain Exception & Global Handlers:
+   - In app/core/exceptions.py: defined AuthorizationError(OPSIBException) with error_code="AUTHORIZATION_FAILED" and status 403.
+   - In app/main.py: registered exception handler for AuthorizationError returning RFC 7807 problem details.
+3. Updated Database Schema:
+   - In app/db/models/task.py: added completed_by = Column(String(64), nullable=True, index=True) to HumanTask.
+4. Updated Request Validation Schemas (app/schemas/task_schemas.py):
+   - Defined ALLOWED_RESOLUTION_CODES set containing the 5 valid resolution codes.
+   - Added field validator in CompleteRequest requiring resolution_code in ALLOWED_RESOLUTION_CODES.
+   - Made resolution_evidence_ref required with min_length=1.
+   - Removed actor_id field from all task request body schemas (AcknowledgeRequest, StartRequest, CompleteRequest,
+     SubmitForVerificationRequest, VerifyRequest, ReopenRequest, AssignRequest, ReassignRequest).
+5. Implemented Security & Authorization Dependencies (app/core/security.py):
+   - get_actor_id: extracts non-empty X-User-ID header; raises HTTPException(401) if absent or blank.
+   - get_current_actor: resolves Employee from DB, verifies employment_status == "ACTIVE" (403) and tenant_id match (403).
+   - authorize(session, task, actor, action): centrally enforces RBAC and separation of duties:
+     * acknowledge, start, complete, submit-verification: requires actor.employee_id == task.assignee_id (403).
+     * reassign: permitted for location/regional managers or assignee self-handoff (403).
+     * assign, reopen: requires manager role with location or regional jurisdiction (403).
+     * verify: requires manager role with location or regional jurisdiction AND actor.employee_id != task.completed_by (403).
+6. Updated Workflow Services (app/workflows/task_service.py):
+   - Validated resolution_code and resolution_evidence_ref in complete_task; sets task.completed_by = actor_id.
+   - Updated get_task_with_audit and _get_task_or_404 to accept optional tenant_id and filter cross-tenant queries.
+7. Updated Task API Router (app/api/v1/tasks.py):
+   - Updated get_task to inject tenant_id via Depends(get_tenant_id) for tenant isolation.
+   - Updated all mutating endpoints to use actor: Employee = Depends(get_current_actor) and invoke authorize().
+8. Updated Test Suites & Fixtures:
+   - Updated tests/test_task_lifecycle.py, tests/test_api_v1.py, tests/test_failure_paths.py, and tests/test_idempotency.py
+     to pass X-User-ID headers and clean JSON bodies without actor_id.
+   - Fixed location jurisdiction in manual queue tests to use regional specialist HR-501 for STORE-015 task assignment.
+9. Documentation Updates (README.md):
+   - Documented Actor Identity, Authorization & Verification Standards in README.md.
+   - Explicitly documented that header-based X-User-ID identity is an assessment stand-in for real auth (OAuth2/OIDC JWT) in production.
+   - Updated test badge and summary table to 155 passed tests.
+   - Updated cURL workflow examples.
+10. Executed Full Verification:
+   - Full test suite: 155/155 PASSED across all 10 test modules in 8.11s.
+   - scripts/run_verification.py: ALL 6 SCENARIOS & OPERATIONAL INVARIANTS PASSED.
+
+WHY IT WAS DONE:
+- Resolves Bug 4 from FIX.md: guarantees every state mutation is attributable to an authenticated, active employee,
+  enforces strict role-based authorization and separation of duties (preventing self-verification), validates completion
+  evidence, isolates cross-tenant task inspection, and ensures the append-only audit trail's actor_id is trustworthy.
+
+
+
 
 

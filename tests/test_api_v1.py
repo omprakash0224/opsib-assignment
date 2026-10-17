@@ -223,6 +223,7 @@ class TestAPITaskWorkflowsAndGlobalErrorHandling:
         ])
         client.post("/api/v1/imports/employees", json=[
             {"source_system": "HRMS", "source_employee_id": "HR-888", "display_name": "Test Associate", "role": "receiving_associate", "employment_status": "ACTIVE", "location_code": "HL-1"},
+            {"source_system": "HRMS", "source_employee_id": "MGR-01", "display_name": "Store Manager", "role": "store_manager", "employment_status": "ACTIVE", "location_code": "HL-1"},
         ])
         client.post("/api/v1/imports/workforce_status", json=[
             {"source_system": "WFM", "source_employee_id": "HR-888", "availability_status": "ON_SHIFT", "shift_start": "2026-10-16T08:00:00+05:30", "shift_end": "2026-10-16T17:00:00+05:30", "observed_at": "2026-10-16T14:30:00+05:30"},
@@ -239,9 +240,9 @@ class TestAPITaskWorkflowsAndGlobalErrorHandling:
         task_id = self._setup_active_task(client)
 
         resp = client.post(f"/api/v1/tasks/{task_id}/complete", json={
-            "actor_id": "HR-888",
             "resolution_code": "SUPPLIER_SHORT_SHIPMENT_CONFIRMED",
-        })
+            "resolution_evidence_ref": "REF-INVALID-JUMP",
+        }, headers={"X-User-ID": "HR-888"})
         assert resp.status_code == 409
         data = resp.json()
         assert data["error_code"] == "INVALID_STATE_TRANSITION"
@@ -261,15 +262,14 @@ class TestAPITaskWorkflowsAndGlobalErrorHandling:
         task_id = self._setup_active_task(client)
 
         # Progression: ASSIGNED -> ACKNOWLEDGED -> IN_PROGRESS -> COMPLETED -> PENDING_VERIFICATION -> VERIFIED
-        client.post(f"/api/v1/tasks/{task_id}/acknowledge", json={"actor_id": "HR-888"})
-        client.post(f"/api/v1/tasks/{task_id}/start", json={"actor_id": "HR-888"})
+        client.post(f"/api/v1/tasks/{task_id}/acknowledge", headers={"X-User-ID": "HR-888"})
+        client.post(f"/api/v1/tasks/{task_id}/start", headers={"X-User-ID": "HR-888"})
         client.post(f"/api/v1/tasks/{task_id}/complete", json={
-            "actor_id": "HR-888",
             "resolution_code": "SUPPLIER_SHORT_SHIPMENT_CONFIRMED",
             "resolution_evidence_ref": "REF-9999",
-        })
-        client.post(f"/api/v1/tasks/{task_id}/submit-verification", json={"actor_id": "HR-888"})
-        verify_resp = client.post(f"/api/v1/tasks/{task_id}/verify", json={"actor_id": "MGR-01", "notes": "Audited"})
+        }, headers={"X-User-ID": "HR-888"})
+        client.post(f"/api/v1/tasks/{task_id}/submit-verification", headers={"X-User-ID": "HR-888"})
+        verify_resp = client.post(f"/api/v1/tasks/{task_id}/verify", json={"notes": "Audited"}, headers={"X-User-ID": "MGR-01"})
         assert verify_resp.status_code == 200
         assert verify_resp.json()["status"] == "VERIFIED"
 

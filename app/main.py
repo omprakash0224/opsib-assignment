@@ -17,6 +17,7 @@ from app.core.exceptions import (
     ResourceNotFoundError,
     AIProviderError,
     IneligibleAssigneeError,
+    AuthorizationError,
 )
 from sqlalchemy.exc import IntegrityError
 from app.schemas.common_schemas import ErrorResponse
@@ -121,6 +122,18 @@ async def data_quality_error_handler(request: Request, exc: DataQualityError):
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content=ErrorResponse(
             error_code="DATA_QUALITY_ERROR",
+            message=exc.message,
+            details=exc.details,
+        ).model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(AuthorizationError)
+async def authorization_error_handler(request: Request, exc: AuthorizationError):
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content=ErrorResponse(
+            error_code="FORBIDDEN",
             message=exc.message,
             details=exc.details,
         ).model_dump(mode="json"),

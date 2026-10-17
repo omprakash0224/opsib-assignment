@@ -286,7 +286,7 @@ class TestTaskLifecycle:
         task_service.start_task(db_session, task_id, "HR-102")
         task_service.complete_task(
             db_session, task_id, "HR-102",
-            resolution_code="INVESTIGATION_PENDING", resolution_evidence_ref=None,
+            resolution_code="INVESTIGATION_PENDING", resolution_evidence_ref="REF-INCOMPLETE",
         )
         task_service.submit_for_verification(db_session, task_id, "HR-102")
 
@@ -458,34 +458,32 @@ class TestTaskAPI:
         tid = task["id"]
 
         # ASSIGNED -> ACKNOWLEDGED
-        r = client.post(f"/api/v1/tasks/{tid}/acknowledge", json={"actor_id": "HR-102"})
+        r = client.post(f"/api/v1/tasks/{tid}/acknowledge", headers={"X-User-ID": "HR-102"})
         assert r.status_code == 200
         assert r.json()["status"] == "ACKNOWLEDGED"
 
         # ACKNOWLEDGED -> IN_PROGRESS
-        r = client.post(f"/api/v1/tasks/{tid}/start", json={"actor_id": "HR-102"})
+        r = client.post(f"/api/v1/tasks/{tid}/start", headers={"X-User-ID": "HR-102"})
         assert r.status_code == 200
         assert r.json()["status"] == "IN_PROGRESS"
 
         # IN_PROGRESS -> COMPLETED
         r = client.post(f"/api/v1/tasks/{tid}/complete", json={
-            "actor_id": "HR-102",
             "resolution_code": "SUPPLIER_SHORT_SHIPMENT_CONFIRMED",
             "resolution_evidence_ref": "INV-2024-09-07",
-        })
+        }, headers={"X-User-ID": "HR-102"})
         assert r.status_code == 200
         assert r.json()["status"] == "COMPLETED"
 
         # COMPLETED -> PENDING_VERIFICATION
-        r = client.post(f"/api/v1/tasks/{tid}/submit-verification", json={"actor_id": "HR-102"})
+        r = client.post(f"/api/v1/tasks/{tid}/submit-verification", headers={"X-User-ID": "HR-102"})
         assert r.status_code == 200
         assert r.json()["status"] == "PENDING_VERIFICATION"
 
         # PENDING_VERIFICATION -> VERIFIED
         r = client.post(f"/api/v1/tasks/{tid}/verify", json={
-            "actor_id": "HR-201",
             "notes": "Confirmed via supplier invoice audit",
-        })
+        }, headers={"X-User-ID": "HR-201"})
         assert r.status_code == 200
         assert r.json()["status"] == "VERIFIED"
 
@@ -495,12 +493,11 @@ class TestTaskAPI:
         tasks = client.get("/api/v1/tasks").json()["items"]
         tid = tasks[0]["id"]
 
-        # Task is ASSIGNED; jump directly to COMPLETED should fail
+        # Task is ASSIGNED; jump directly to COMPLETED should fail with 409
         r = client.post(f"/api/v1/tasks/{tid}/complete", json={
-            "actor_id": "HR-102",
-            "resolution_code": "JUMP",
-            "resolution_evidence_ref": None,
-        })
+            "resolution_code": "CONFIRMED",
+            "resolution_evidence_ref": "REF",
+        }, headers={"X-User-ID": "HR-102"})
         assert r.status_code == 409
 
     def test_api_idempotent_completion_retry_returns_200(self, client):
@@ -510,15 +507,15 @@ class TestTaskAPI:
         task = next(t for t in tasks if t["assignee_id"] == "HR-102")
         tid = task["id"]
 
-        client.post(f"/api/v1/tasks/{tid}/acknowledge", json={"actor_id": "HR-102"})
-        client.post(f"/api/v1/tasks/{tid}/start", json={"actor_id": "HR-102"})
+        client.post(f"/api/v1/tasks/{tid}/acknowledge", headers={"X-User-ID": "HR-102"})
+        client.post(f"/api/v1/tasks/{tid}/start", headers={"X-User-ID": "HR-102"})
 
-        payload = {"actor_id": "HR-102", "resolution_code": "X", "resolution_evidence_ref": "Y"}
-        r1 = client.post(f"/api/v1/tasks/{tid}/complete", json=payload)
+        payload = {"resolution_code": "X", "resolution_evidence_ref": "Y"}
+        r1 = client.post(f"/api/v1/tasks/{tid}/complete", json=payload, headers={"X-User-ID": "HR-102"})
         assert r1.status_code == 200
 
         # Retry with same payload
-        r2 = client.post(f"/api/v1/tasks/{tid}/complete", json=payload)
+        r2 = client.post(f"/api/v1/tasks/{tid}/complete", json=payload, headers={"X-User-ID": "HR-102"})
         assert r2.status_code == 200
         assert r2.json()["status"] == "COMPLETED"
 
@@ -530,10 +527,9 @@ class TestTaskAPI:
         tid = task["id"]
 
         r = client.post(f"/api/v1/tasks/{tid}/reassign", json={
-            "actor_id": "HR-201",
             "new_assignee_id": "HR-201",
             "reason": "HR-102 is now unavailable",
-        })
+        }, headers={"X-User-ID": "HR-201"})
         assert r.status_code == 200
         data = r.json()
         assert data["assignee_id"] == "HR-201"
@@ -545,7 +541,7 @@ class TestTaskAPI:
         tasks = client.get("/api/v1/tasks").json()["items"]
         tid = tasks[0]["id"]
 
-        client.post(f"/api/v1/tasks/{tid}/acknowledge", json={"actor_id": "HR-102"})
+        client.post(f"/api/v1/tasks/{tid}/acknowledge", headers={"X-User-ID": "HR-102"})
 
         detail = client.get(f"/api/v1/tasks/{tid}").json()
         assert "audit_events" in detail
@@ -621,18 +617,16 @@ class TestBug1VerifyExceptionResolutionPersistence:
         assert init_exc["resolved_at"] is None
 
         # Advance through lifecycle: ASSIGNED -> ACK -> IN_PROGRESS -> COMPLETED -> PENDING_VERIFICATION -> VERIFIED
-        assert fresh_client.post(f"/api/v1/tasks/{tid}/acknowledge", json={"actor_id": "HR-102"}).status_code == 200
-        assert fresh_client.post(f"/api/v1/tasks/{tid}/start", json={"actor_id": "HR-102"}).status_code == 200
+        assert fresh_client.post(f"/api/v1/tasks/{tid}/acknowledge", headers={"X-User-ID": "HR-102"}).status_code == 200
+        assert fresh_client.post(f"/api/v1/tasks/{tid}/start", headers={"X-User-ID": "HR-102"}).status_code == 200
         assert fresh_client.post(f"/api/v1/tasks/{tid}/complete", json={
-            "actor_id": "HR-102",
             "resolution_code": "SUPPLIER_SHORT_SHIPMENT_CONFIRMED",
             "resolution_evidence_ref": "REF-PO501",
-        }).status_code == 200
-        assert fresh_client.post(f"/api/v1/tasks/{tid}/submit-verification", json={"actor_id": "HR-102"}).status_code == 200
+        }, headers={"X-User-ID": "HR-102"}).status_code == 200
+        assert fresh_client.post(f"/api/v1/tasks/{tid}/submit-verification", headers={"X-User-ID": "HR-102"}).status_code == 200
         verify_resp = fresh_client.post(f"/api/v1/tasks/{tid}/verify", json={
-            "actor_id": "HR-201",
             "notes": "Verified by manager",
-        })
+        }, headers={"X-User-ID": "HR-201"})
         assert verify_resp.status_code == 200
         assert verify_resp.json()["status"] == "VERIFIED"
 
@@ -740,10 +734,9 @@ class TestBug3AssignmentValidationAndManualQueue:
         task_store14 = next(t for t in tasks if t["canonical_location_id"] == "STORE-014")
 
         r = client.post(f"/api/v1/tasks/{task_store14['id']}/reassign", json={
-            "actor_id": "HR-201",
             "new_assignee_id": "HR-103",
             "reason": "Test reassignment to inactive",
-        })
+        }, headers={"X-User-ID": "HR-201"})
         assert r.status_code == 422
         assert "INACTIVE" in r.text or "ACTIVE" in r.text
 
@@ -754,10 +747,9 @@ class TestBug3AssignmentValidationAndManualQueue:
         task_store14 = next(t for t in tasks if t["canonical_location_id"] == "STORE-014")
 
         r = client.post(f"/api/v1/tasks/{task_store14['id']}/reassign", json={
-            "actor_id": "HR-201",
             "new_assignee_id": "HR-101",
             "reason": "Test reassignment to off shift",
-        })
+        }, headers={"X-User-ID": "HR-201"})
         assert r.status_code == 422
         assert "OFF_SHIFT" in r.text or "ON_SHIFT" in r.text or "shift" in r.text.lower()
 
@@ -768,10 +760,9 @@ class TestBug3AssignmentValidationAndManualQueue:
         tid = tasks[0]["id"]
 
         r = client.post(f"/api/v1/tasks/{tid}/reassign", json={
-            "actor_id": "HR-201",
             "new_assignee_id": "HR-NONEXISTENT-999",
             "reason": "Test reassignment to non-existent employee",
-        })
+        }, headers={"X-User-ID": "HR-201"})
         assert r.status_code in (404, 422)
         assert r.status_code != 500
 
@@ -782,10 +773,9 @@ class TestBug3AssignmentValidationAndManualQueue:
         task_store14 = next(t for t in tasks if t["canonical_location_id"] == "STORE-014")
 
         r = client.post(f"/api/v1/tasks/{task_store14['id']}/reassign", json={
-            "actor_id": "HR-201",
             "new_assignee_id": "HR-401",  # Store manager at STORE-015
             "reason": "Wrong location reassignment",
-        })
+        }, headers={"X-User-ID": "HR-201"})
         assert r.status_code == 422
         assert "location" in r.text.lower() or "STORE" in r.text
 
@@ -843,10 +833,9 @@ class TestBug3AssignmentValidationAndManualQueue:
 
         # Assign via POST /tasks/{id}/assign to regional operations HR-501 (REGION-MH covers STORE-015)
         assign_resp = client.post(f"/api/v1/tasks/{tid}/assign", json={
-            "actor_id": "HR-201",
             "assignee_id": "HR-501",
             "reason": "Supervisor manual allocation to regional specialist",
-        })
+        }, headers={"X-User-ID": "HR-501"})
         assert assign_resp.status_code == 200
         assigned_data = assign_resp.json()
         assert assigned_data["status"] == "ASSIGNED"
@@ -860,7 +849,7 @@ class TestBug3AssignmentValidationAndManualQueue:
         assert assign_event["event_type"] == "ASSIGNED"
         assert assign_event["from_status"] == "CREATED"
         assert assign_event["to_status"] == "ASSIGNED"
-        assert assign_event["actor_id"] == "HR-201"
+        assert assign_event["actor_id"] == "HR-501"
         assert "Supervisor manual allocation" in assign_event["reason"]
 
     def test_audit_history_preserves_previous_assignee(self, client):
@@ -873,10 +862,9 @@ class TestBug3AssignmentValidationAndManualQueue:
 
         # Reassign to store manager HR-201 (active, on-shift at STORE-014)
         r = client.post(f"/api/v1/tasks/{tid}/reassign", json={
-            "actor_id": "HR-201",
             "new_assignee_id": "HR-201",
             "reason": "Store manager taking over investigation",
-        })
+        }, headers={"X-User-ID": "HR-201"})
         assert r.status_code == 200
 
         detail = client.get(f"/api/v1/tasks/{tid}").json()
@@ -929,13 +917,180 @@ class TestBug3AssignmentValidationAndManualQueue:
 
         # Call reassign on the CREATED task
         reassign_resp = client.post(f"/api/v1/tasks/{tid}/reassign", json={
-            "actor_id": "HR-201",
             "new_assignee_id": "HR-501",
             "reason": "Reassigning CREATED task to regional operations specialist",
-        })
+        }, headers={"X-User-ID": "HR-501"})
         assert reassign_resp.status_code == 200
         assigned_data = reassign_resp.json()
         assert assigned_data["status"] == "ASSIGNED"
         assert assigned_data["assignee_id"] == "HR-501"
+
+
+# ---------------------------------------------------------------------------
+# Bug 4 Tests: Actor Identity and Authorization
+# ---------------------------------------------------------------------------
+
+class TestBug4ActorIdentityAndAuthorization:
+    """
+    Bug 4 Verification:
+    - actor_id from X-User-ID header; missing returns 401.
+    - Unknown actor returns 401. Inactive actor returns 403.
+    - Non-assignee acknowledge/complete returns 403.
+    - Separation of duties: same actor cannot complete and verify (403).
+    - Location boundary: manager at another location cannot verify (403).
+    - Cross-tenant GET /tasks/{id} returns 404.
+    - Complete requires allowed resolution_code and resolution_evidence_ref (422).
+    """
+
+    def _setup_fixtures(self, client):
+        for ds in [
+            "product_aliases", "location_aliases", "employees",
+            "workforce_status", "purchase_order_lines", "goods_receipt_lines",
+        ]:
+            client.post(
+                f"/api/v1/imports/{ds}",
+                content=open(os.path.join(WORKSPACE_DIR, f"{ds}.csv"), encoding="utf-8").read(),
+                headers={"Content-Type": "text/csv"},
+            )
+        client.post("/api/v1/reconciliation/run")
+
+    def test_missing_x_user_id_header_returns_401(self, client):
+        """Mutating endpoint without X-User-ID header must return 401 Unauthorized."""
+        self._setup_fixtures(client)
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        tid = tasks[0]["id"]
+
+        r = client.post(f"/api/v1/tasks/{tid}/acknowledge", json={})
+        assert r.status_code == 401
+        assert "X-User-ID" in r.text or "unauthorized" in r.text.lower()
+
+    def test_unknown_actor_returns_401(self, client):
+        """Unknown actor ID in X-User-ID header returns 401."""
+        self._setup_fixtures(client)
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        tid = tasks[0]["id"]
+
+        r = client.post(
+            f"/api/v1/tasks/{tid}/acknowledge",
+            json={},
+            headers={"X-User-ID": "HR-NONEXISTENT-999"},
+        )
+        assert r.status_code == 401
+
+    def test_inactive_actor_returns_403(self, client):
+        """Inactive employee in X-User-ID header returns 403 Forbidden."""
+        self._setup_fixtures(client)
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        task_store14 = next(t for t in tasks if t["canonical_location_id"] == "STORE-014")
+        tid = task_store14["id"]
+
+        # HR-103 is INACTIVE in employees.csv
+        r = client.post(
+            f"/api/v1/tasks/{tid}/acknowledge",
+            json={},
+            headers={"X-User-ID": "HR-103"},
+        )
+        assert r.status_code == 403
+
+    def test_non_assignee_acknowledge_or_complete_returns_403(self, client):
+        """Only the current assignee can acknowledge, start, complete, or submit-verification."""
+        self._setup_fixtures(client)
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        task_store14 = next(t for t in tasks if t["canonical_location_id"] == "STORE-014")
+        tid = task_store14["id"]
+        assert task_store14["assignee_id"] == "HR-102"
+
+        # HR-201 (store manager) attempts to acknowledge task assigned to HR-102
+        r = client.post(
+            f"/api/v1/tasks/{tid}/acknowledge",
+            json={},
+            headers={"X-User-ID": "HR-201"},
+        )
+        assert r.status_code == 403
+        assert "assignee" in r.text.lower() or "forbidden" in r.text.lower()
+
+    def test_same_user_completes_then_verifies_returns_403(self, client):
+        """Separation of duties: The person who completed the task cannot also verify it."""
+        self._setup_fixtures(client)
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        task_store14 = next(t for t in tasks if t["canonical_location_id"] == "STORE-014")
+        tid = task_store14["id"]
+
+        # Assignee HR-102 acknowledges, starts, completes, and submits
+        client.post(f"/api/v1/tasks/{tid}/acknowledge", headers={"X-User-ID": "HR-102"})
+        client.post(f"/api/v1/tasks/{tid}/start", headers={"X-User-ID": "HR-102"})
+        client.post(f"/api/v1/tasks/{tid}/complete", json={
+            "resolution_code": "SUPPLIER_SHORT_SHIPMENT_CONFIRMED",
+            "resolution_evidence_ref": "CARRIER-POD-REF-992",
+            "resolution_notes": "Completed by HR-102",
+        }, headers={"X-User-ID": "HR-102"})
+        client.post(f"/api/v1/tasks/{tid}/submit-verification", headers={"X-User-ID": "HR-102"})
+
+        # HR-102 attempts to verify their own task
+        r = client.post(f"/api/v1/tasks/{tid}/verify", json={
+            "notes": "Self verification attempt",
+        }, headers={"X-User-ID": "HR-102"})
+        assert r.status_code == 403
+
+    def test_manager_at_another_location_verifies_returns_403(self, client):
+        """Manager at another location cannot verify task (STORE-015 manager HR-401 cannot verify STORE-014 task)."""
+        self._setup_fixtures(client)
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        task_store14 = next(t for t in tasks if t["canonical_location_id"] == "STORE-014")
+        tid = task_store14["id"]
+
+        client.post(f"/api/v1/tasks/{tid}/acknowledge", headers={"X-User-ID": "HR-102"})
+        client.post(f"/api/v1/tasks/{tid}/start", headers={"X-User-ID": "HR-102"})
+        client.post(f"/api/v1/tasks/{tid}/complete", json={
+            "resolution_code": "SUPPLIER_SHORT_SHIPMENT_CONFIRMED",
+            "resolution_evidence_ref": "CARRIER-POD-REF-992",
+        }, headers={"X-User-ID": "HR-102"})
+        client.post(f"/api/v1/tasks/{tid}/submit-verification", headers={"X-User-ID": "HR-102"})
+
+        # HR-401 is store manager at STORE-015, cannot verify STORE-014 task
+        r = client.post(f"/api/v1/tasks/{tid}/verify", json={
+            "notes": "Cross-store manager verification",
+        }, headers={"X-User-ID": "HR-401"})
+        assert r.status_code == 403
+
+        # But HR-201 (store manager at STORE-014) CAN verify it!
+        r_ok = client.post(f"/api/v1/tasks/{tid}/verify", json={
+            "notes": "Eligible manager verification",
+        }, headers={"X-User-ID": "HR-201"})
+        assert r_ok.status_code == 200
+        assert r_ok.json()["status"] == "VERIFIED"
+
+    def test_cross_tenant_get_task_returns_404(self, client):
+        """GET /tasks/{id} filtered by tenant returns 404 for another tenant."""
+        self._setup_fixtures(client)
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        tid = tasks[0]["id"]
+
+        # Call with different tenant header
+        r = client.get(f"/api/v1/tasks/{tid}", headers={"X-Tenant-ID": "TENANT-OTHER"})
+        assert r.status_code == 404
+
+    def test_complete_requires_evidence_ref_and_valid_code(self, client):
+        """Completing task requires resolution_evidence_ref and valid resolution_code."""
+        self._setup_fixtures(client)
+        tasks = client.get("/api/v1/tasks").json()["items"]
+        task_store14 = next(t for t in tasks if t["canonical_location_id"] == "STORE-014")
+        tid = task_store14["id"]
+
+        client.post(f"/api/v1/tasks/{tid}/acknowledge", headers={"X-User-ID": "HR-102"})
+        client.post(f"/api/v1/tasks/{tid}/start", headers={"X-User-ID": "HR-102"})
+
+        # Missing evidence_ref
+        r_no_ref = client.post(f"/api/v1/tasks/{tid}/complete", json={
+            "resolution_code": "SUPPLIER_SHORT_SHIPMENT_CONFIRMED",
+        }, headers={"X-User-ID": "HR-102"})
+        assert r_no_ref.status_code == 422
+
+        # Invalid resolution_code
+        r_invalid_code = client.post(f"/api/v1/tasks/{tid}/complete", json={
+            "resolution_code": "NOT_AN_ALLOWED_CODE_12345",
+            "resolution_evidence_ref": "REF-123",
+        }, headers={"X-User-ID": "HR-102"})
+        assert r_invalid_code.status_code == 422
 
 
