@@ -205,3 +205,186 @@ class TestFallbackModule:
         result = find_fallback_manager(db_session, "STORE-015", log)
         assert result is None
         assert any("INACTIVE" in e.get("rejected_reason", "") for e in log)
+
+
+# ---------------------------------------------------------------------------
+# Bug #7: Shift Freshness & Deterministic Tie-Breaking Tests
+# ---------------------------------------------------------------------------
+
+class TestBug7ShiftFreshnessAndDeterministicRouting:
+    """
+    Verifies Bug #7: Shift freshness checks, shift window bounds,
+    and deterministic tie-breaking in workforce routing.
+    """
+
+    def test_stale_sample_not_eligible(self, db_session: Session):
+        """
+        A shift sample older than MAX_SHIFT_SAMPLE_AGE (4 hours) relative to evaluation time
+        must be rejected with STALE_AVAILABILITY and fall through.
+        """
+        from datetime import datetime
+        from app.config import KOLKATA_TZ
+        from app.routing.policy import _is_eligible
+        from app.db.models.canonical import LocationAlias
+
+        # Seed store location
+        db_session.add(LocationAlias(
+            source_system="HRMS", external_location_id="STORE-FRESH",
+            canonical_location_id="STORE-FRESH", region_id="R1"
+        ))
+
+        # Associate with stale sample (observed 10:00, evaluation time is 15:00 -> 5 hours old > 4h limit)
+        emp = Employee(
+            employee_id="HR-STALE",
+            tenant_id="TENANT-001",
+            display_name="Stale Sam",
+            employment_status="ACTIVE",
+            role="receiving_associate",
+            canonical_location_id="STORE-FRESH",
+        )
+        shift = WorkforceShift(
+            employee_id="HR-STALE",
+            availability_status="ON_SHIFT",
+            shift_start=datetime(2026, 10, 16, 9, 0, 0, tzinfo=KOLKATA_TZ),
+            shift_end=datetime(2026, 10, 16, 18, 0, 0, tzinfo=KOLKATA_TZ),
+            observed_at=datetime(2026, 10, 16, 10, 0, 0, tzinfo=KOLKATA_TZ),
+        )
+        db_session.add_all([emp, shift])
+        db_session.commit()
+
+        log = []
+        eligible = _is_eligible(db_session, emp, log, location_id="STORE-FRESH")
+        assert not eligible
+        assert len(log) == 1
+        assert "STALE_AVAILABILITY" in log[0].get("rejected_reason", "")
+
+        # In routing, this location must fall through to MANUAL_ASSIGNMENT_REQUIRED
+        decision = RoutingPolicy.route(db_session, "STORE-FRESH")
+        assert decision.assignee_id is None
+        assert decision.assignment_reason == REASON_MANUAL
+        assert any("STALE_AVAILABILITY" in entry.get("rejected_reason", "") for entry in decision.eligibility_log)
+
+    def test_sample_observed_after_evaluation_time_not_eligible(self, db_session: Session):
+        """
+        A shift sample observed after the evaluation time (in the future relative to frozen time)
+        must not be considered eligible.
+        """
+        from datetime import datetime
+        from app.config import KOLKATA_TZ
+        from app.routing.policy import _is_eligible
+
+        emp = Employee(
+            employee_id="HR-FUTURE",
+            tenant_id="TENANT-001",
+            display_name="Future Fiona",
+            employment_status="ACTIVE",
+            role="receiving_associate",
+            canonical_location_id="STORE-FRESH",
+        )
+        # Observed at 15:30 (evaluation time is 15:00)
+        shift = WorkforceShift(
+            employee_id="HR-FUTURE",
+            availability_status="ON_SHIFT",
+            shift_start=datetime(2026, 10, 16, 9, 0, 0, tzinfo=KOLKATA_TZ),
+            shift_end=datetime(2026, 10, 16, 18, 0, 0, tzinfo=KOLKATA_TZ),
+            observed_at=datetime(2026, 10, 16, 15, 30, 0, tzinfo=KOLKATA_TZ),
+        )
+        db_session.add_all([emp, shift])
+        db_session.commit()
+
+        log = []
+        eligible = _is_eligible(db_session, emp, log, location_id="STORE-FRESH")
+        assert not eligible
+        assert any("after evaluation time" in log[0].get("rejected_reason", "") or "future" in log[0].get("rejected_reason", "").lower() for entry in log)
+
+    def test_evaluation_time_outside_shift_window_not_eligible(self, db_session: Session):
+        """
+        Even if the sample is fresh, if the evaluation time is outside the employee's shift window
+        (shift_start <= evaluation_time <= shift_end), the employee must not be eligible.
+        """
+        from datetime import datetime
+        from app.config import KOLKATA_TZ
+        from app.routing.policy import _is_eligible
+
+        # Shift ended at 14:00, but evaluation time is 15:00
+        emp = Employee(
+            employee_id="HR-WINDOW",
+            tenant_id="TENANT-001",
+            display_name="Window Walter",
+            employment_status="ACTIVE",
+            role="receiving_associate",
+            canonical_location_id="STORE-FRESH",
+        )
+        shift = WorkforceShift(
+            employee_id="HR-WINDOW",
+            availability_status="ON_SHIFT",
+            shift_start=datetime(2026, 10, 16, 6, 0, 0, tzinfo=KOLKATA_TZ),
+            shift_end=datetime(2026, 10, 16, 14, 0, 0, tzinfo=KOLKATA_TZ),
+            observed_at=datetime(2026, 10, 16, 13, 50, 0, tzinfo=KOLKATA_TZ),
+        )
+        db_session.add_all([emp, shift])
+        db_session.commit()
+
+        log = []
+        eligible = _is_eligible(db_session, emp, log, location_id="STORE-FRESH")
+        assert not eligible
+        assert any("shift window" in log[0].get("rejected_reason", "").lower() for entry in log)
+
+    def test_two_eligible_associates_tie_broken_deterministically(self, db_session: Session):
+        """
+        When two associates at the same location are both eligible, routing must deterministically
+        break the tie (ordered by employee_id), always selecting the same one regardless of insertion order.
+        """
+        from datetime import datetime
+        from app.config import KOLKATA_TZ
+        from app.db.models.canonical import LocationAlias
+
+        db_session.add(LocationAlias(
+            source_system="HRMS", external_location_id="STORE-TIE",
+            canonical_location_id="STORE-TIE", region_id="R1"
+        ))
+
+        # Insert HR-BETA first into the database
+        emp_beta = Employee(
+            employee_id="HR-BETA",
+            tenant_id="TENANT-001",
+            display_name="Associate Beta",
+            employment_status="ACTIVE",
+            role="receiving_associate",
+            canonical_location_id="STORE-TIE",
+        )
+        shift_beta = WorkforceShift(
+            employee_id="HR-BETA",
+            availability_status="ON_SHIFT",
+            shift_start=datetime(2026, 10, 16, 9, 0, 0, tzinfo=KOLKATA_TZ),
+            shift_end=datetime(2026, 10, 16, 18, 0, 0, tzinfo=KOLKATA_TZ),
+            observed_at=datetime(2026, 10, 16, 14, 50, 0, tzinfo=KOLKATA_TZ),
+        )
+
+        # Insert HR-ALPHA second into the database
+        emp_alpha = Employee(
+            employee_id="HR-ALPHA",
+            tenant_id="TENANT-001",
+            display_name="Associate Alpha",
+            employment_status="ACTIVE",
+            role="receiving_associate",
+            canonical_location_id="STORE-TIE",
+        )
+        shift_alpha = WorkforceShift(
+            employee_id="HR-ALPHA",
+            availability_status="ON_SHIFT",
+            shift_start=datetime(2026, 10, 16, 9, 0, 0, tzinfo=KOLKATA_TZ),
+            shift_end=datetime(2026, 10, 16, 18, 0, 0, tzinfo=KOLKATA_TZ),
+            observed_at=datetime(2026, 10, 16, 14, 50, 0, tzinfo=KOLKATA_TZ),
+        )
+
+        db_session.add_all([emp_beta, shift_beta, emp_alpha, shift_alpha])
+        db_session.commit()
+
+        # Both are eligible, but HR-ALPHA must be selected deterministically
+        for _ in range(5):
+            decision = RoutingPolicy.route(db_session, "STORE-TIE")
+            assert decision.assignee_id == "HR-ALPHA", (
+                f"Expected deterministic tie-break to select 'HR-ALPHA', but got '{decision.assignee_id}'"
+            )
+            assert decision.assignment_reason == REASON_PRIMARY

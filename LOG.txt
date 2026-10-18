@@ -1074,6 +1074,51 @@ WHY IT WAS DONE:
   tenant data isolation across ingestion, unique constraints, reconciliation, and workforce routing.
 
 
+================================================================================
+STEP 20: BUG #7 FIX - SHIFT FRESHNESS TELEMETRY LIMITS & DETERMINISTIC ROUTING
+================================================================================
+
+WHAT WAS DONE:
+1. Configured Shift Freshness Telemetry Limit (app/config.py):
+   - Added MAX_SHIFT_SAMPLE_AGE = timedelta(hours=float(os.getenv("MAX_SHIFT_SAMPLE_AGE_HOURS", "4.0"))).
+   - Justification: In retail operations, badge scans and workforce management (WFM) syncs occur periodically.
+     A 4-hour window accommodates periodic network syncs while preventing stale morning shift telemetry from
+     incorrectly assigning afternoon exceptions to associates who may have departed mid-shift.
+2. Implemented Unified Shift Freshness & Window Gates (app/routing/policy.py):
+   - In check_assignable:
+     * Evaluates against authoritative clock get_current_time() (or explicit at_time parameter), preventing
+       machine clock drift or dependency.
+     * Normalizes datetimes with helper _ensure_tz_aware to guarantee safe comparison across tz-naive SQLite
+       columns and tz-aware application timestamps.
+     * Verifies observed_at <= evaluation_time; future samples are rejected with clear diagnostic message.
+     * Verifies sample age (evaluation_time - observed_at) <= MAX_SHIFT_SAMPLE_AGE; stale samples are rejected
+       with STALE_AVAILABILITY.
+     * Verifies shift_start <= evaluation_time <= shift_end; samples outside active shift windows are rejected.
+     * Availability status must strictly equal 'ON_SHIFT'.
+3. Implemented Deterministic Candidate Tie-Breaking (app/routing/policy.py & app/routing/fallback.py):
+   - In RoutingPolicy.route: ordered primary receiving_associate candidates by Employee.employee_id.asc().
+   - In find_fallback_manager: ordered fallback store_manager candidates by Employee.employee_id.asc().
+   - Maintains complete audit trail in eligibility_log, recording reasons for all evaluated candidates while
+     updating superseded eligible candidates with deterministic tie-break justification.
+4. Authored Comprehensive Shift Freshness & Deterministic Routing Test Suite:
+   - Added TestBug7ShiftFreshnessAndDeterministicRouting in tests/test_routing.py:
+     * test_stale_sample_not_eligible: sample older than 4 hours rejected with STALE_AVAILABILITY and falls
+       through to MANUAL_ASSIGNMENT_REQUIRED unassigned queue.
+     * test_sample_observed_after_evaluation_time_not_eligible: future sample relative to evaluation time rejected.
+     * test_evaluation_time_outside_shift_window_not_eligible: sample outside [shift_start, shift_end] rejected.
+     * test_two_eligible_associates_tie_broken_deterministically: verifies deterministic tie-breaking selects
+       HR-ALPHA over HR-BETA across 5 successive iterations regardless of database insertion order.
+5. Documentation & Verification:
+   - Updated README.md test badge to 170 passed (100%) and updated test breakdown table.
+   - Verification runner scripts/run_verification.py passed all 6 core scenarios and invariants.
+   - Pytest suite: 170/170 PASSED (100% pass rate).
+
+WHY IT WAS DONE:
+- Resolves Bug #7 from FIX.md: replaces naive latest-row selection with strict shift freshness telemetry limits,
+  temporal boundary enforcement, and deterministic tie-breaking, fully aligning routing execution with architectural claims.
+
+
+
 
 
 

@@ -1,7 +1,7 @@
 # OPSIB Retail Exception Detection & Task Reliability Engine
 **Backend Engineering Assessment | Production Implementation**
 
-[![Test Suite](https://img.shields.io/badge/pytest-166%20passed%20(100%25)-brightgreen.svg)](#7-automated-test-suite--verification)
+[![Test Suite](https://img.shields.io/badge/pytest-170%20passed%20(100%25)-brightgreen.svg)](#7-automated-test-suite--verification)
 [![Rule Version](https://img.shields.io/badge/rule%20version-v1.0.0-blue.svg)](#2-system-architecture--design-principles)
 [![Evaluation Clock](https://img.shields.io/badge/frozen%20time-2026--10--16T15%3A00%3A00%2B05%3A30-orange.svg)](#2-system-architecture--design-principles)
 [![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](#3-quickstart--execution-guide)
@@ -16,7 +16,7 @@ OPSIB connects messy, siloed retail systems (ERP, WMS, HRMS, and Workforce Manag
 2. **Preserve Raw Provenance & Enforce Idempotency:** Implements a two-tier storage architecture preserving unmutated source payloads with SHA-256 checksums while deduplicating repeats and isolating conflicting transmissions.
 3. **Deterministically Detect Operational Shortfalls:** Evaluates receipt lines against purchase order commitments with zero tolerance against a frozen temporal anchor (`2026-10-16T15:00:00+05:30`), strictly honoring deadlines and order cancellations.
 4. **Preserve Epistemic Neutrality:** Recognizes the total absence of supplier dispatch / ASN data in the evidence pack. Discrepancies are labeled `RECEIPT_SHORTFALL`, never asserting unproven supplier fault or carrier transit loss.
-5. **Route Actionable Tasks to Eligible Workforce:** Implements two-tier organizational routing: primary on-shift receiving associates with fallback to store managers, while strictly enforcing that HRMS employment status overrides workforce shift logs.
+5. **Route Actionable Tasks to Eligible Workforce:** Implements two-tier organizational routing: primary on-shift receiving associates with fallback to store managers, while strictly enforcing shift freshness telemetry limits, active shift windows, and deterministic tie-breaking.
 6. **Manage Auditable Task Lifecycles with Retry Safety:** Implements a server-enforced state machine rejecting illegal transitions and safely handling client timeout retries with `Idempotency-Key` headers without duplicate audit logs.
 7. **Sandbox AI Advisory Copilot:** Integrates an OpenRouter AI boundary with deterministic mock support, providing grounded investigation summaries while enforcing strict citation whitelist guardrails against hallucinated IDs.
 
@@ -428,28 +428,28 @@ curl -X POST "http://localhost:8000/api/v1/exceptions/857e9179-8ac4-405a-a011-4e
 
 ## 7. Automated Test Suite & Verification
 
-The project includes **166 automated tests** providing 100% scenario coverage, failure-path verification, and retry resilience:
+The project includes **170 automated tests** providing 100% scenario coverage, failure-path verification, and retry resilience:
 
 ```text
 ============================= test session starts =============================
 platform win32 -- Python 3.13.15, pytest-9.1.1, pluggy-1.7.0
 rootdir: D:\opsib-assignment
 plugins: anyio-4.15.1, asyncio-1.4.0
-collected 166 items
+collected 170 items
 
 tests\test_ai_boundary.py ................                               [  9%]
-tests\test_api_v1.py ..............                                      [ 18%]
-tests\test_failure_paths.py ..............                               [ 26%]
-tests\test_idempotency.py ...........                                    [ 33%]
-tests\test_ingestion.py ..........                                       [ 39%]
-tests\test_models.py ....                                                [ 41%]
-tests\test_reconciliation.py ..............................              [ 59%]
-tests\test_routing.py .............                                      [ 67%]
-tests\test_scenarios_e2e.py ....                                         [ 69%]
+tests\test_api_v1.py ..............                                      [ 17%]
+tests\test_failure_paths.py ..............                               [ 25%]
+tests\test_idempotency.py ...........                                    [ 32%]
+tests\test_ingestion.py ..........                                       [ 38%]
+tests\test_models.py ....                                                [ 40%]
+tests\test_reconciliation.py ..............................              [ 58%]
+tests\test_routing.py .................                                  [ 68%]
+tests\test_scenarios_e2e.py ....                                         [ 70%]
 tests\test_task_lifecycle.py ........................................... [ 95%]
 .......                                                                  [100%]
 
-======================= 166 passed, 4 warnings in 9.82s =======================
+====================== 170 passed, 4 warnings in 10.03s =======================
 ```
 
 ### Test Modules Breakdown
@@ -458,7 +458,7 @@ tests\test_task_lifecycle.py ........................................... [ 95%]
 | :--- | :--- | :--- |
 | [`test_reconciliation.py`](file:///d:/opsib-assignment/tests/test_reconciliation.py) | 30 | All 6 mandatory PO scenarios; zero tolerance; neutral summaries (ADR-6); Bug 5 late-arriving receipt re-evaluation, revision tracking, auto-close, task cancellation, and boundary tests. |
 | [`test_task_lifecycle.py`](file:///d:/opsib-assignment/tests/test_task_lifecycle.py) | 50 | State machine transitions; terminal states; illegal transition rejection; audit log sequence; resolution validation; assignment eligibility; Bug 4 actor identity & authorization matrix. |
-| [`test_routing.py`](file:///d:/opsib-assignment/tests/test_routing.py) | 13 | HRMS active gate overriding shift status (HR-103); off-shift filter (HR-101); store manager fallback (HR-401); regional role null location (HR-501). |
+| [`test_routing.py`](file:///d:/opsib-assignment/tests/test_routing.py) | 17 | HRMS active gate overriding shift status (HR-103); off-shift filter (HR-101); store manager fallback (HR-401); regional role null location (HR-501); Bug 7 shift freshness (`MAX_SHIFT_SAMPLE_AGE`), shift window bounds (`shift_start <= eval <= shift_end`), `STALE_AVAILABILITY` queue fall-through, and deterministic `employee_id` tie-breaking. |
 | [`test_ai_boundary.py`](file:///d:/opsib-assignment/tests/test_ai_boundary.py) | 16 | OpenRouter client; mock provider; citation whitelist validation; hallucinated ID stripping; zero DB write verification. |
 | [`test_failure_paths.py`](file:///d:/opsib-assignment/tests/test_failure_paths.py) | 14 | Unmapped SKUs and locations isolated to `DataQualityIssue`; conflicting duplicate payload safety; corrupt rows; AI gateway timeout recovery. |
 | [`test_api_v1.py`](file:///d:/opsib-assignment/tests/test_api_v1.py) | 14 | JSON/CSV/multipart imports; batch inspection; task transition APIs; RFC 7807 error envelopes (404, 409, 422). |

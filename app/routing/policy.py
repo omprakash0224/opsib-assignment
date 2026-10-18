@@ -22,9 +22,18 @@ from datetime import datetime
 from typing import Optional, Union
 from sqlalchemy.orm import Session
 
-from app.config import DEFAULT_TENANT_ID
+from app.config import DEFAULT_TENANT_ID, MAX_SHIFT_SAMPLE_AGE, get_current_time, KOLKATA_TZ
 from app.core.logging import logger
 from app.db.models.canonical import Employee, WorkforceShift, LocationAlias
+
+
+def _ensure_tz_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Ensures a datetime object is timezone-aware with KOLKATA_TZ."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=KOLKATA_TZ)
+    return dt.astimezone(KOLKATA_TZ)
 
 
 # ---------------------------------------------------------------------------
@@ -71,9 +80,13 @@ def check_assignable(
          - Regional match: if employee has regional scope (canonical_location_id is None
            or role == 'regional_operations'), employee.region_id must match the location's region.
          - Different store location assignment is rejected.
-      4. Shift check:
-         - Latest WorkforceShift (observed_at <= at_time if at_time specified, or latest overall)
-           must show availability_status == 'ON_SHIFT'.
+      4. Shift & Freshness check (Bug #7 / ADR-7):
+         - Evaluated against authoritative clock get_current_time() (or explicit at_time).
+         - Latest WorkforceShift sample must have observed_at <= evaluation_time.
+         - Sample age (evaluation_time - observed_at) must not exceed MAX_SHIFT_SAMPLE_AGE.
+           If exceeded, logs STALE_AVAILABILITY.
+         - Evaluation time must fall within the shift window [shift_start, shift_end].
+         - Availability status must be 'ON_SHIFT'.
 
     Returns:
         (is_eligible: bool, reason: str, employee: Optional[Employee])
@@ -118,14 +131,13 @@ def check_assignable(
                 employee,
             )
 
-    # Gate 3: Shift availability
-    shift_query = session.query(WorkforceShift).filter(
-        WorkforceShift.employee_id == employee.employee_id
+    # Gate 3: Shift availability & freshness
+    shift = (
+        session.query(WorkforceShift)
+        .filter(WorkforceShift.employee_id == employee.employee_id)
+        .order_by(WorkforceShift.observed_at.desc())
+        .first()
     )
-    if at_time is not None:
-        shift_query = shift_query.filter(WorkforceShift.observed_at <= at_time)
-
-    shift = shift_query.order_by(WorkforceShift.observed_at.desc()).first()
 
     if shift is None:
         return (
@@ -134,6 +146,39 @@ def check_assignable(
             employee,
         )
 
+    eval_time = _ensure_tz_aware(at_time if at_time is not None else get_current_time())
+    shift_observed = _ensure_tz_aware(shift.observed_at)
+    shift_start = _ensure_tz_aware(shift.shift_start)
+    shift_end = _ensure_tz_aware(shift.shift_end)
+
+    # Check 1: Sample observed_at must not be in the future relative to evaluation time
+    if shift_observed and eval_time and shift_observed > eval_time:
+        return (
+            False,
+            f"Shift sample observed at {shift_observed.isoformat()} is after evaluation time {eval_time.isoformat()}",
+            employee,
+        )
+
+    # Check 2: Freshness - sample age must not exceed MAX_SHIFT_SAMPLE_AGE
+    if shift_observed and eval_time:
+        sample_age = eval_time - shift_observed
+        if sample_age > MAX_SHIFT_SAMPLE_AGE:
+            return (
+                False,
+                f"STALE_AVAILABILITY: shift sample age {sample_age} exceeds maximum allowed {MAX_SHIFT_SAMPLE_AGE}",
+                employee,
+            )
+
+    # Check 3: Evaluation time must fall within the shift window [shift_start, shift_end]
+    if shift_start and shift_end and eval_time:
+        if not (shift_start <= eval_time <= shift_end):
+            return (
+                False,
+                f"Evaluation time {eval_time.isoformat()} is outside shift window [{shift_start.isoformat()} - {shift_end.isoformat()}]",
+                employee,
+            )
+
+    # Check 4: Availability status must be ON_SHIFT
     if shift.availability_status != "ON_SHIFT":
         return (
             False,
@@ -141,7 +186,7 @@ def check_assignable(
             employee,
         )
 
-    return True, "Active, on-shift, and location/region eligible", employee
+    return True, "Active, on-shift, fresh sample, and location/region eligible", employee
 
 
 def _is_eligible(
@@ -149,11 +194,12 @@ def _is_eligible(
     employee: Employee,
     eligibility_log: list,
     location_id: Optional[str] = None,
+    at_time: Optional[datetime] = None,
 ) -> bool:
     """
     Applies unified eligibility checks via check_assignable.
     """
-    is_ok, reason, _ = check_assignable(session, employee, location_id=location_id)
+    is_ok, reason, _ = check_assignable(session, employee, location_id=location_id, at_time=at_time)
     if not is_ok:
         eligibility_log.append({
             "employee_id": employee.employee_id,
@@ -190,6 +236,7 @@ class RoutingPolicy:
         session: Session,
         canonical_location_id: str,
         tenant_id: str = DEFAULT_TENANT_ID,
+        evaluation_time: Optional[datetime] = None,
     ) -> RoutingDecision:
         """
         Execute routing for an exception at the given location.
@@ -197,6 +244,7 @@ class RoutingPolicy:
         Returns a RoutingDecision with the selected assignee_id (or None),
         the assignment_reason, and a full eligibility_log for audit purposes.
         """
+        eval_time = _ensure_tz_aware(evaluation_time if evaluation_time is not None else get_current_time())
         eligibility_log: list = []
 
         # --- Tier 1: Primary — receiving associates at this location ---
@@ -207,14 +255,22 @@ class RoutingPolicy:
                 Employee.canonical_location_id == canonical_location_id,
                 Employee.role == "receiving_associate",
             )
+            .order_by(Employee.employee_id.asc())
             .all()
         )
 
         selected_candidate = None
         for candidate in primary_candidates:
-            if _is_eligible(session, candidate, eligibility_log, location_id=canonical_location_id):
+            if _is_eligible(session, candidate, eligibility_log, location_id=canonical_location_id, at_time=eval_time):
                 if selected_candidate is None:
                     selected_candidate = candidate
+                else:
+                    # Update eligibility_log since candidate was eligible but superseded by tie-breaking
+                    if eligibility_log and eligibility_log[-1].get("employee_id") == candidate.employee_id:
+                        eligibility_log[-1]["selected"] = False
+                        eligibility_log[-1]["rejected_reason"] = (
+                            f"Eligible but superseded by deterministic tie-break (selected '{selected_candidate.employee_id}')"
+                        )
 
         if selected_candidate:
             logger.info(
@@ -234,7 +290,9 @@ class RoutingPolicy:
 
         # --- Tier 2: Fallback — store managers at this location ---
         from app.routing.fallback import find_fallback_manager  # avoid circular
-        fallback_id = find_fallback_manager(session, canonical_location_id, eligibility_log, tenant_id=tenant_id)
+        fallback_id = find_fallback_manager(
+            session, canonical_location_id, eligibility_log, tenant_id=tenant_id, evaluation_time=eval_time
+        )
         if fallback_id:
             return RoutingDecision(
                 assignee_id=fallback_id,

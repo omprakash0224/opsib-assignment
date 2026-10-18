@@ -24,6 +24,10 @@ DEFAULT_TENANT_ID = os.getenv("DEFAULT_TENANT_ID", "TENANT-001")
 RULE_VERSION = os.getenv("RULE_VERSION", "v1.0.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# Shift Freshness Telemetry Limit (ADR-7 / Bug 7):
+# 4 hours allows periodic badge/WFM syncs while rejecting stale morning data for afternoon routing.
+MAX_SHIFT_SAMPLE_AGE = timedelta(hours=float(os.getenv("MAX_SHIFT_SAMPLE_AGE_HOURS", "4.0")))
+
 # AI & OpenRouter Gateway Configuration (Task D / Phase 7)
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet")

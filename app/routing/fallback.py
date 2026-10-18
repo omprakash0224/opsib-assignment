@@ -3,6 +3,7 @@ Routing Fallback: Store-manager fallback logic for the workforce routing engine.
 
 Delegates eligibility verification to check_assignable in policy.py.
 """
+from datetime import datetime
 from typing import Optional
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,7 @@ def find_fallback_manager(
     canonical_location_id: str,
     eligibility_log: list,
     tenant_id: str = DEFAULT_TENANT_ID,
+    evaluation_time: Optional[datetime] = None,
 ) -> Optional[str]:
     """
     Searches for an active, ON_SHIFT store_manager at the given location.
@@ -34,12 +36,13 @@ def find_fallback_manager(
             Employee.canonical_location_id == canonical_location_id,
             Employee.role == "store_manager",
         )
+        .order_by(Employee.employee_id.asc())
         .all()
     )
 
     for manager in managers:
         is_ok, reason, _ = check_assignable(
-            session, manager, location_id=canonical_location_id
+            session, manager, location_id=canonical_location_id, at_time=evaluation_time
         )
         if not is_ok:
             eligibility_log.append({
