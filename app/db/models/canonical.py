@@ -61,8 +61,8 @@ class PurchaseOrderLine(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("source_system", "source_record_id", name="uq_po_source_record"),
-        UniqueConstraint("po_number", "line_number", name="uq_po_number_line"),
+        UniqueConstraint("tenant_id", "source_system", "source_record_id", name="uq_po_source_record"),
+        UniqueConstraint("tenant_id", "po_number", "line_number", name="uq_po_number_line"),
     )
 
 
@@ -97,7 +97,7 @@ class GoodsReceiptLine(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("source_system", "source_record_id", name="uq_receipt_source_record"),
+        UniqueConstraint("tenant_id", "source_system", "source_record_id", name="uq_receipt_source_record"),
     )
 
 

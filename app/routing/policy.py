@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Optional, Union
 from sqlalchemy.orm import Session
 
+from app.config import DEFAULT_TENANT_ID
 from app.core.logging import logger
 from app.db.models.canonical import Employee, WorkforceShift, LocationAlias
 
@@ -188,6 +189,7 @@ class RoutingPolicy:
         cls,
         session: Session,
         canonical_location_id: str,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> RoutingDecision:
         """
         Execute routing for an exception at the given location.
@@ -201,6 +203,7 @@ class RoutingPolicy:
         primary_candidates = (
             session.query(Employee)
             .filter(
+                Employee.tenant_id == tenant_id,
                 Employee.canonical_location_id == canonical_location_id,
                 Employee.role == "receiving_associate",
             )
@@ -231,7 +234,7 @@ class RoutingPolicy:
 
         # --- Tier 2: Fallback — store managers at this location ---
         from app.routing.fallback import find_fallback_manager  # avoid circular
-        fallback_id = find_fallback_manager(session, canonical_location_id, eligibility_log)
+        fallback_id = find_fallback_manager(session, canonical_location_id, eligibility_log, tenant_id=tenant_id)
         if fallback_id:
             return RoutingDecision(
                 assignee_id=fallback_id,

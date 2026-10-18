@@ -18,6 +18,8 @@ Idempotency (ADR-5):
 from datetime import datetime, timezone, timedelta
 from typing import Callable, List, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.config import DEFAULT_TENANT_ID, get_current_time
 from app.core.logging import logger
@@ -88,6 +90,7 @@ def create_task_for_exception(
     decision = RoutingPolicy.route(
         session=session,
         canonical_location_id=exception.canonical_location_id,
+        tenant_id=tenant_id,
     )
 
     initial_status = "ASSIGNED" if decision.assignee_id else "CREATED"
@@ -104,26 +107,34 @@ def create_task_for_exception(
         due_at=due_at,
     )
     try:
-        session.add(task)
-        session.flush()
+        with session.begin_nested():
+            session.add(task)
+            session.flush()
 
-        event_type = "ASSIGNED" if decision.assignee_id else "CREATED"
-        audit_service.record_event(
-            session=session,
-            task_id=task.id,
-            event_type=event_type,
-            to_status=initial_status,
-            actor_id=actor_id,
-            from_status=None,
-            reason=decision.assignment_reason,
-            payload={
-                "exception_id": exception.id,
-                "assignee_id": decision.assignee_id,
-                "eligibility_log": decision.eligibility_log,
-            },
-        )
-
+            event_type = "ASSIGNED" if decision.assignee_id else "CREATED"
+            audit_service.record_event(
+                session=session,
+                task_id=task.id,
+                event_type=event_type,
+                to_status=initial_status,
+                actor_id=actor_id,
+                from_status=None,
+                reason=decision.assignment_reason,
+                payload={
+                    "exception_id": exception.id,
+                    "assignee_id": decision.assignee_id,
+                    "eligibility_log": decision.eligibility_log,
+                },
+            )
+            session.flush()
         session.commit()
+    except IntegrityError:
+        # Savepoint rolled back automatically; another worker created the task concurrently
+        existing = session.query(HumanTask).filter_by(task_key=task_key).first()
+        if existing:
+            logger.info(f"[TASK] Concurrent collision resolved; loaded existing task {existing.id}")
+            return existing
+        raise
     except Exception:
         session.rollback()
         raise
@@ -154,8 +165,15 @@ def acknowledge_task(
     assert_transition(task.status, "ACKNOWLEDGED")
     if idempotency_key:
         task.idempotency_key = idempotency_key
-    _apply_transition(session, task, "ACKNOWLEDGED", "ACKNOWLEDGED", actor_id)
-    return task
+    try:
+        _apply_transition(session, task, "ACKNOWLEDGED", "ACKNOWLEDGED", actor_id)
+        return task
+    except StaleDataError:
+        session.rollback()
+        reloaded = _get_task_or_404(session, task_id)
+        if reloaded.status == "ACKNOWLEDGED":
+            return reloaded
+        raise
 
 
 def start_task(
@@ -172,8 +190,15 @@ def start_task(
     assert_transition(task.status, "IN_PROGRESS")
     if idempotency_key:
         task.idempotency_key = idempotency_key
-    _apply_transition(session, task, "IN_PROGRESS", "STATUS_CHANGE", actor_id)
-    return task
+    try:
+        _apply_transition(session, task, "IN_PROGRESS", "STATUS_CHANGE", actor_id)
+        return task
+    except StaleDataError:
+        session.rollback()
+        reloaded = _get_task_or_404(session, task_id)
+        if reloaded.status == "IN_PROGRESS":
+            return reloaded
+        raise
 
 
 def complete_task(
@@ -232,16 +257,30 @@ def complete_task(
     if idempotency_key:
         task.idempotency_key = idempotency_key
 
-    _apply_transition(
-        session, task, "COMPLETED", "COMPLETED", actor_id,
-        from_status=prev_status,
-        payload={
-            "resolution_code": resolution_code,
-            "resolution_evidence_ref": resolution_evidence_ref,
-            "idempotency_key": idempotency_key,
-        },
-    )
-    return task
+    try:
+        _apply_transition(
+            session, task, "COMPLETED", "COMPLETED", actor_id,
+            from_status=prev_status,
+            payload={
+                "resolution_code": resolution_code,
+                "resolution_evidence_ref": resolution_evidence_ref,
+                "idempotency_key": idempotency_key,
+            },
+        )
+        return task
+    except StaleDataError:
+        session.rollback()
+        reloaded = _get_task_or_404(session, task_id)
+        if reloaded.status == "COMPLETED" and is_idempotent_completion(
+            task_status=reloaded.status,
+            stored_resolution_code=reloaded.resolution_code,
+            stored_evidence_ref=reloaded.resolution_evidence_ref,
+            incoming_resolution_code=resolution_code,
+            incoming_evidence_ref=resolution_evidence_ref,
+        ):
+            logger.info(f"[TASK] Concurrent completion resolved idempotently for task {task_id}")
+            return reloaded
+        raise
 
 
 def verify_task(

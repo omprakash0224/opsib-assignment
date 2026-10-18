@@ -203,47 +203,57 @@ class DetectionService:
         )
 
         if not existing:
-            exc = OperationalException(
-                tenant_id=tenant_id,
-                exception_key=finding.exception_key,
-                exception_type="RECEIPT_SHORTFALL",
-                status="DETECTED",
-                po_number=finding.po_number,
-                po_line_number=finding.po_line_number,
-                canonical_product_id=finding.canonical_product_id,
-                canonical_location_id=finding.canonical_location_id,
-                expected_qty_base=finding.expected_qty_base,
-                received_qty_base=finding.received_qty_base,
-                variance_qty_base=finding.variance_qty_base,
-                base_uom=finding.base_uom,
-                revision=1,
-                mapping_version=mapping_version,
-                rule_version=RULE_VERSION,
-                evidence_records=finding.evidence_records,
-                neutral_summary=finding.neutral_summary,
-                missing_evidence=MISSING_EVIDENCE_NOTE,
-                detected_at=evaluation_time,
-            )
-            session.add(exc)
-            session.flush()
+            try:
+                with session.begin_nested():
+                    exc = OperationalException(
+                        tenant_id=tenant_id,
+                        exception_key=finding.exception_key,
+                        exception_type="RECEIPT_SHORTFALL",
+                        status="DETECTED",
+                        po_number=finding.po_number,
+                        po_line_number=finding.po_line_number,
+                        canonical_product_id=finding.canonical_product_id,
+                        canonical_location_id=finding.canonical_location_id,
+                        expected_qty_base=finding.expected_qty_base,
+                        received_qty_base=finding.received_qty_base,
+                        variance_qty_base=finding.variance_qty_base,
+                        base_uom=finding.base_uom,
+                        revision=1,
+                        mapping_version=mapping_version,
+                        rule_version=RULE_VERSION,
+                        evidence_records=finding.evidence_records,
+                        neutral_summary=finding.neutral_summary,
+                        missing_evidence=MISSING_EVIDENCE_NOTE,
+                        detected_at=evaluation_time,
+                    )
+                    session.add(exc)
+                    session.flush()
 
-            evt = ExceptionEvent(
-                exception_id=exc.id,
-                event_type="DETECTED",
-                previous_state=None,
-                new_state={
-                    "status": "DETECTED",
-                    "received_qty_base": exc.received_qty_base,
-                    "variance_qty_base": exc.variance_qty_base,
-                    "revision": 1,
-                },
-                actor_id="SYSTEM",
-                notes="Initial shortfall detected",
-                timestamp=datetime.now(timezone.utc),
-            )
-            session.add(evt)
-            session.flush()
-            return True, False
+                    evt = ExceptionEvent(
+                        exception_id=exc.id,
+                        event_type="DETECTED",
+                        previous_state=None,
+                        new_state={
+                            "status": "DETECTED",
+                            "received_qty_base": exc.received_qty_base,
+                            "variance_qty_base": exc.variance_qty_base,
+                            "revision": 1,
+                        },
+                        actor_id="SYSTEM",
+                        notes="Initial shortfall detected",
+                        timestamp=datetime.now(timezone.utc),
+                    )
+                    session.add(evt)
+                    session.flush()
+                    return True, False
+            except IntegrityError:
+                # Savepoint rolled back automatically on error; reload existing
+                existing = (
+                    session.query(OperationalException)
+                    .filter_by(exception_key=finding.exception_key)
+                    .first()
+                )
+
 
         # Existing exception
         logger.info(

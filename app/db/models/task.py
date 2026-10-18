@@ -3,7 +3,7 @@ Human Task and Workflow Models.
 """
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Text, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, String, Integer, DateTime, Text, ForeignKey, UniqueConstraint
 from app.db.base import Base
 
 
@@ -30,6 +30,12 @@ class HumanTask(Base):
     resolution_notes = Column(Text, nullable=True)
     completed_by = Column(String(64), nullable=True, index=True)
 
+    version = Column(Integer, nullable=False, default=1)
     idempotency_key = Column(String(128), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+    __mapper_args__ = {
+        "version_id_col": version
+    }
+

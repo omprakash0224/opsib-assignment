@@ -12,6 +12,7 @@ class ImportBatch(Base):
     __tablename__ = "import_batches"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(64), nullable=False, default="TENANT-001", index=True)
     dataset_name = Column(String(64), nullable=False, index=True)
     status = Column(String(32), nullable=False, default="PENDING")  # PENDING, COMPLETED, PARTIAL, FAILED
     total_rows = Column(Integer, default=0, nullable=False)
@@ -31,6 +32,7 @@ class RawRecord(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     batch_id = Column(String(36), ForeignKey("import_batches.id", ondelete="SET NULL"), nullable=True, index=True)
+    tenant_id = Column(String(64), nullable=False, default="TENANT-001", index=True)
     dataset_name = Column(String(64), nullable=False, index=True)
     source_system = Column(String(32), nullable=False, index=True)
     source_record_id = Column(String(128), nullable=False, index=True)
@@ -41,5 +43,6 @@ class RawRecord(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("dataset_name", "source_record_id", name="uq_raw_dataset_source_id"),
+        UniqueConstraint("tenant_id", "dataset_name", "source_record_id", name="uq_raw_dataset_source_id"),
     )
+

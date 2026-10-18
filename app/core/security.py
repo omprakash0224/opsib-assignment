@@ -15,10 +15,11 @@ from app.db.models.audit import TaskAuditEvent
 
 
 def get_tenant_id(
-    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID", description="Tenant Identifier")
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID", description="Tenant Identifier"),
+    tenant_id: Optional[str] = None,
 ) -> str:
-    """Extracts tenant ID from header or falls back to DEFAULT_TENANT_ID."""
-    return x_tenant_id or DEFAULT_TENANT_ID
+    """Extracts tenant ID from header or query parameter, or falls back to DEFAULT_TENANT_ID."""
+    return x_tenant_id or tenant_id or DEFAULT_TENANT_ID
 
 
 def get_actor_id(

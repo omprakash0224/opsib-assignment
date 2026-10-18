@@ -132,7 +132,11 @@ class ReconciliationDetector:
         shortfall). Only findings where `is_shortfall` is True should be
         persisted as OperationalExceptions.
         """
-        po_lines = self._session.query(PurchaseOrderLine).all()
+        po_lines = (
+            self._session.query(PurchaseOrderLine)
+            .filter(PurchaseOrderLine.tenant_id == self._tenant_id)
+            .all()
+        )
         findings: List[ShortfallFinding] = []
 
         for po_line in po_lines:
@@ -196,6 +200,7 @@ class ReconciliationDetector:
         receipt_lines: List[GoodsReceiptLine] = (
             self._session.query(GoodsReceiptLine)
             .filter(
+                GoodsReceiptLine.tenant_id == self._tenant_id,
                 GoodsReceiptLine.po_number == po_line.po_number,
                 GoodsReceiptLine.po_line_number == po_line.line_number,
                 GoodsReceiptLine.posting_status.in_(ELIGIBLE_RECEIPT_POSTING_STATUSES),

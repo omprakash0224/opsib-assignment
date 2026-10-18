@@ -46,7 +46,7 @@ class IngestionService:
         Validates, deduplicates, and ingests CSV content for the specified dataset.
         Guarantees idempotency and isolates data quality issues.
         """
-        batch = ImportBatch(dataset_name=dataset_name, status="PENDING")
+        batch = ImportBatch(tenant_id=tenant_id, dataset_name=dataset_name, status="PENDING")
         session.add(batch)
         session.flush()
 
@@ -65,7 +65,7 @@ class IngestionService:
         Validates, deduplicates, and ingests a list of dictionary records.
         Guarantees idempotency and isolates data quality issues.
         """
-        batch = ImportBatch(dataset_name=dataset_name, status="PENDING")
+        batch = ImportBatch(tenant_id=tenant_id, dataset_name=dataset_name, status="PENDING")
         session.add(batch)
         session.flush()
 
@@ -125,7 +125,7 @@ class IngestionService:
             # 2. Cross-batch Deduplication & Conflict Check against RawRecord
             existing_raw = (
                 session.query(RawRecord)
-                .filter_by(dataset_name=dataset_name, source_record_id=source_id)
+                .filter_by(tenant_id=tenant_id, dataset_name=dataset_name, source_record_id=source_id)
                 .first()
             )
 
@@ -178,6 +178,7 @@ class IngestionService:
             if not is_retry:
                 raw_record = RawRecord(
                     batch_id=batch.id,
+                    tenant_id=tenant_id,
                     dataset_name=dataset_name,
                     source_system=raw_dict.get("source_system", cls._infer_source_system(dataset_name)),
                     source_record_id=source_id,

@@ -6,6 +6,7 @@ Delegates eligibility verification to check_assignable in policy.py.
 from typing import Optional
 from sqlalchemy.orm import Session
 
+from app.config import DEFAULT_TENANT_ID
 from app.core.logging import logger
 from app.db.models.canonical import Employee
 
@@ -14,6 +15,7 @@ def find_fallback_manager(
     session: Session,
     canonical_location_id: str,
     eligibility_log: list,
+    tenant_id: str = DEFAULT_TENANT_ID,
 ) -> Optional[str]:
     """
     Searches for an active, ON_SHIFT store_manager at the given location.
@@ -28,6 +30,7 @@ def find_fallback_manager(
     managers = (
         session.query(Employee)
         .filter(
+            Employee.tenant_id == tenant_id,
             Employee.canonical_location_id == canonical_location_id,
             Employee.role == "store_manager",
         )

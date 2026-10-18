@@ -20,6 +20,7 @@ from app.core.exceptions import (
     AuthorizationError,
 )
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 from app.schemas.common_schemas import ErrorResponse
 
 
@@ -100,6 +101,18 @@ async def idempotency_conflict_handler(request: Request, exc: IdempotencyConflic
             error_code="IDEMPOTENCY_CONFLICT",
             message=exc.message,
             details=exc.details,
+        ).model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(StaleDataError)
+async def stale_data_error_handler(request: Request, exc: StaleDataError):
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content=ErrorResponse(
+            error_code="CONCURRENT_UPDATE_CONFLICT",
+            message="The resource was modified concurrently by another transaction. Please reload and retry.",
+            details={"error": str(exc)},
         ).model_dump(mode="json"),
     )
 

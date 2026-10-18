@@ -1013,6 +1013,67 @@ WHY IT WAS DONE:
   late-arriving receipts or cancellations, keeping quantities, evidence, and revisions synchronized, auto-closing
   satisfied exceptions and cancelling unneeded human tasks, while preventing silent reopening of already resolved issues.
 
+--------------------------------------------------------------------------------
+STEP 19: FIX BUG #6 - RACE HANDLING, OPTIMISTIC LOCKING & MULTI-TENANT ISOLATION
+Timestamp: 2026-10-18T13:19:00+05:30
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Implemented Concurrency and Race Handling via Nested Savepoints:
+   - Updated create_task_for_exception() in app/workflows/task_service.py: wrapped HumanTask insertion and
+     initial audit event recording in session.begin_nested() savepoint.
+   - Handled IntegrityError collisions on task_key (e.g. concurrent task creation from parallel reconciliation
+     or API calls) by rolling back the savepoint and returning the existing task record cleanly without throwing
+     HTTP 500 errors.
+   - Updated _upsert_shortfall_exception() in app/detection/service.py: wrapped OperationalException insertion and
+     ExceptionEvent recording in session.begin_nested() savepoint. Collisions on exception_key roll back the
+     savepoint and reload the existing row for subsequent quantity update checks.
+2. Implemented Optimistic Locking on HumanTask:
+   - Added version column (Integer, default=1) and mapper arguments {"version_id_col": version} to HumanTask
+     in app/db/models/task.py.
+   - Updated transition functions in app/workflows/task_service.py (complete_task, acknowledge_task, start_task):
+     * Concurrent completion or transition attempts trigger StaleDataError when committing on stale rows.
+     * complete_task catches StaleDataError, rolls back the uncommitted audit event, and safely re-inspects the DB:
+       if the task was completed concurrently with matching payload, it returns the completed task idempotently;
+       otherwise it raises StaleDataError.
+   - Registered global exception handler for StaleDataError in app/main.py: returns HTTP 409 Conflict with
+     RFC 7807 error envelope (error_code="CONCURRENT_UPDATE_CONFLICT").
+3. Enforced Strict Multi-Tenant Schema Constraints & Query Isolation:
+   - Updated RawRecord and ImportBatch in app/db/models/raw.py: added tenant_id column and updated unique
+     constraint to (tenant_id, dataset_name, source_record_id).
+   - Updated ImportService in app/ingestion/service.py: scopes ImportBatch creation, RawRecord deduplication,
+     and RawRecord instantiation by tenant_id.
+   - Updated PurchaseOrderLine and GoodsReceiptLine in app/db/models/canonical.py:
+     * PurchaseOrderLine unique constraints updated to (tenant_id, source_system, source_record_id) and
+       (tenant_id, po_number, line_number).
+     * GoodsReceiptLine unique constraint updated to (tenant_id, source_system, source_record_id).
+   - Updated ReconciliationDetector in app/detection/detector.py:
+     * PurchaseOrderLine query filtered strictly by PurchaseOrderLine.tenant_id == self._tenant_id.
+     * GoodsReceiptLine aggregation query filtered strictly by GoodsReceiptLine.tenant_id == self._tenant_id.
+   - Updated RoutingPolicy in app/routing/policy.py and find_fallback_manager in app/routing/fallback.py:
+     * Primary and fallback employee candidate queries filtered strictly by Employee.tenant_id == tenant_id.
+   - Updated get_tenant_id in app/core/security.py to accept tenant_id via query parameter as well as X-Tenant-ID header.
+4. Authored Concurrency & Multi-Tenant Test Suite (TestBug6RaceHandlingAndConcurrency in tests/test_idempotency.py):
+   - test_concurrent_create_task_for_same_exception: verifies two parallel threads calling create_task_for_exception
+     produce exactly 1 task with zero unhandled exceptions.
+   - test_concurrent_upsert_shortfall_exception: verifies parallel shortfall exception creation produces exactly 1 record.
+   - test_concurrent_complete_task_optimistic_locking: verifies two sessions calling complete_task on stale rows write
+     exactly 1 COMPLETED audit event, preventing double-transition.
+   - test_multi_tenant_isolation_same_po_number: verifies two tenants importing identical po_number="PO-999" do not
+     collide on unique constraints and do not cross-contaminate each other's reconciliation findings.
+   - test_concurrency_race_handling_loop_20x: executes 20 iterations of concurrent task creation and optimistic lock
+     completion in a loop, ensuring zero race flakes, zero duplicates, and zero 500s.
+5. Documentation Updates (README.md):
+   - Documented state-based retry safety, optimistic locking, and savepoint race handling under Question 2.
+6. Verification:
+   - Pytest suite: 166/166 PASSED in 9.82s (100% pass rate).
+   - Verification runner: scripts/run_verification.py ALL 6 SCENARIOS & INVARIANTS PASSED.
+
+WHY IT WAS DONE:
+- Resolves Bug 6 from FIX.md: eliminates 500 crashes during concurrent exception and task creation via portable
+  savepoints, prevents double-transitions and duplicate audit logs via optimistic locking, and guarantees strict
+  tenant data isolation across ingestion, unique constraints, reconciliation, and workforce routing.
+
+
 
 
 

@@ -1,7 +1,7 @@
 # OPSIB Retail Exception Detection & Task Reliability Engine
 **Backend Engineering Assessment | Production Implementation**
 
-[![Test Suite](https://img.shields.io/badge/pytest-161%20passed%20(100%25)-brightgreen.svg)](#7-automated-test-suite--verification)
+[![Test Suite](https://img.shields.io/badge/pytest-166%20passed%20(100%25)-brightgreen.svg)](#7-automated-test-suite--verification)
 [![Rule Version](https://img.shields.io/badge/rule%20version-v1.0.0-blue.svg)](#2-system-architecture--design-principles)
 [![Evaluation Clock](https://img.shields.io/badge/frozen%20time-2026--10--16T15%3A00%3A00%2B05%3A30-orange.svg)](#2-system-architecture--design-principles)
 [![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](#3-quickstart--execution-guide)
@@ -262,9 +262,11 @@ Our system prevents duplicate business effects through a **three-tier defensive 
 **Implementation Answer:**
 In high-latency or mobile retail warehouse environments, network connections frequently drop after the server commits a transaction but before the client receives the HTTP response. A naive implementation would return `409 Conflict` on the retry ("Cannot complete task: task is already COMPLETED"), causing client error alerts.
 
-Our system implements **safe idempotent completion semantics via `Idempotency-Key` headers and transition payload guards**:
+Our system implements **state-based retry safety with optimistic locking and idempotency guards**:
 
-1. **State Machine Idempotency Guard:**
+1. **State Machine & Optimistic Locking Guard:**
+   - `HumanTask` includes an optimistic locking column (`version_id_col`). Concurrent completion attempts on the same task cannot double-transition or append duplicate audit events.
+   - If two requests attempt concurrent completion, the second transaction detects a version conflict and raises `StaleDataError`, mapped globally to RFC 7807 `409 Conflict` (`CONCURRENT_UPDATE_CONFLICT`) or resolved idempotently if matching state is already committed.
    - When the client calls `POST /api/v1/tasks/{id}/complete`, it provides the resolution payload:
      ```json
      {
@@ -273,15 +275,17 @@ Our system implements **safe idempotent completion semantics via `Idempotency-Ke
        "notes": "Dock search complete; supplier confirms under-shipment."
      }
      ```
-     along with an optional `Idempotency-Key: <UUID>` header.
-2. **Deterministic Retry Evaluation:**
-   - When the request arrives, the server inspects the current database state of the task:
-     - **Scenario A (First Request):** Current status is `IN_PROGRESS`. The task transitions to `COMPLETED`, persists the resolution details and idempotency key, and appends a `TaskAuditEvent(event_type="COMPLETED")`. Returns `200 OK`.
+     along with an optional `Idempotency-Key` header stored on the task and audit trail.
+2. **State-Based Deterministic Retry Evaluation:**
+   - Retry safety is state-based: the server inspects the database state of the task rather than relying solely on cache:
+     - **Scenario A (First Request):** Current status is `IN_PROGRESS`. The task transitions to `COMPLETED`, bumps the version, persists resolution details, and appends a `TaskAuditEvent(event_type="COMPLETED")`. Returns `200 OK`.
      - **Scenario B (Client Timeout & Identical Retry):** Current status is already `COMPLETED`. The server checks whether the submitted `resolution_code` and `resolution_evidence_ref` match the stored resolution. Because they match:
        - The server returns the existing completed task representation with `200 OK`.
        - **Crucial Invariant:** **Zero** duplicate `TaskAuditEvent` records are written. The audit trail remains completely clean.
      - **Scenario C (Conflicting Retry):** If the client retries with an altered resolution code (e.g. attempting to change `SUPPLIER_SHORT_SHIPMENT_CONFIRMED` to `GOODS_FOUND_IN_TRANSIT` without a supervisor reopen transition), the server rejects the request with `409 Conflict` (`IdempotencyConflictError`), explaining the conflict.
-3. *Verification:* Verified by `test_client_timeout_retry_with_idempotency_key_returns_200_without_duplicate_audit` in [`tests/test_idempotency.py`](file:///d:/opsib-assignment/tests/test_idempotency.py).
+3. **Race-Safe Creation via Nested Savepoints:**
+   - Task creation and shortfall exception upsert wrap inserts in `session.begin_nested()` and catch `IntegrityError` collisions on unique keys (`task_key` and `exception_key`). If two workers insert concurrently, the savepoint rolls back and the existing record is safely loaded without raising 500 errors.
+4. *Verification:* Verified by `TestBug6RaceHandlingAndConcurrency` and `TestClientTimeoutAndRetrySafety` in [`tests/test_idempotency.py`](file:///d:/opsib-assignment/tests/test_idempotency.py).
 
 ---
 
@@ -424,28 +428,28 @@ curl -X POST "http://localhost:8000/api/v1/exceptions/857e9179-8ac4-405a-a011-4e
 
 ## 7. Automated Test Suite & Verification
 
-The project includes **161 automated tests** providing 100% scenario coverage, failure-path verification, and retry resilience:
+The project includes **166 automated tests** providing 100% scenario coverage, failure-path verification, and retry resilience:
 
 ```text
 ============================= test session starts =============================
 platform win32 -- Python 3.13.15, pytest-9.1.1, pluggy-1.7.0
 rootdir: D:\opsib-assignment
 plugins: anyio-4.15.1, asyncio-1.4.0
-collected 161 items
+collected 166 items
 
 tests\test_ai_boundary.py ................                               [  9%]
 tests\test_api_v1.py ..............                                      [ 18%]
-tests\test_failure_paths.py ..............                               [ 27%]
-tests\test_idempotency.py ......                                         [ 31%]
-tests\test_ingestion.py ..........                                       [ 37%]
-tests\test_models.py ....                                                [ 39%]
-tests\test_reconciliation.py ..............................              [ 58%]
-tests\test_routing.py .............                                      [ 66%]
-tests\test_scenarios_e2e.py ....                                         [ 68%]
+tests\test_failure_paths.py ..............                               [ 26%]
+tests\test_idempotency.py ...........                                    [ 33%]
+tests\test_ingestion.py ..........                                       [ 39%]
+tests\test_models.py ....                                                [ 41%]
+tests\test_reconciliation.py ..............................              [ 59%]
+tests\test_routing.py .............                                      [ 67%]
+tests\test_scenarios_e2e.py ....                                         [ 69%]
 tests\test_task_lifecycle.py ........................................... [ 95%]
 .......                                                                  [100%]
 
-======================= 161 passed, 4 warnings in 8.63s =======================
+======================= 166 passed, 4 warnings in 9.82s =======================
 ```
 
 ### Test Modules Breakdown
@@ -458,7 +462,7 @@ tests\test_task_lifecycle.py ........................................... [ 95%]
 | [`test_ai_boundary.py`](file:///d:/opsib-assignment/tests/test_ai_boundary.py) | 16 | OpenRouter client; mock provider; citation whitelist validation; hallucinated ID stripping; zero DB write verification. |
 | [`test_failure_paths.py`](file:///d:/opsib-assignment/tests/test_failure_paths.py) | 14 | Unmapped SKUs and locations isolated to `DataQualityIssue`; conflicting duplicate payload safety; corrupt rows; AI gateway timeout recovery. |
 | [`test_api_v1.py`](file:///d:/opsib-assignment/tests/test_api_v1.py) | 14 | JSON/CSV/multipart imports; batch inspection; task transition APIs; RFC 7807 error envelopes (404, 409, 422). |
-| [`test_idempotency.py`](file:///d:/opsib-assignment/tests/test_idempotency.py) | 6 | Design Q1 (double import produces zero duplicates); Design Q2 (client timeout retry returns 200 OK without duplicate audit events). |
+| [`test_idempotency.py`](file:///d:/opsib-assignment/tests/test_idempotency.py) | 11 | Design Q1 (deduplication); Design Q2 (client timeout retry); Bug 6 race handling (savepoint exception & task creation), optimistic locking (version_id_col), multi-tenant isolation, and 20x concurrency loop. |
 | [`test_ingestion.py`](file:///d:/opsib-assignment/tests/test_ingestion.py) | 10 | Intra-batch duplicate skips; BOX to EA unit conversion; crosswalk mapping; Bug 2 recoverable rejected rows. |
 | [`test_scenarios_e2e.py`](file:///d:/opsib-assignment/tests/test_scenarios_e2e.py) | 4 | Multi-dataset end-to-end integration loading real CSV fixtures from disk. |
 | [`test_models.py`](file:///d:/opsib-assignment/tests/test_models.py) | 4 | Database models, foreign keys, frozen clock anchor, raw record uniqueness. |
