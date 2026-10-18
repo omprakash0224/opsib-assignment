@@ -25,6 +25,22 @@
             }
           },
           {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
             "name": "X-Tenant-ID",
             "in": "header",
             "required": false,
@@ -156,6 +172,22 @@
             "description": "Filter by dataset name"
           },
           {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
             "name": "X-Tenant-ID",
             "in": "header",
             "required": false,
@@ -211,6 +243,22 @@
         "description": "Runs the shortfall detection engine against all canonical PO lines using the frozen evaluation clock (2026-10-16T15:00:00+05:30). Also auto-creates HumanTasks for each new exception with workforce routing. This endpoint is idempotent: repeated calls will not create duplicate exceptions or tasks.",
         "operationId": "run_reconciliation_api_v1_reconciliation_run_post",
         "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
           {
             "name": "X-Tenant-ID",
             "in": "header",
@@ -316,6 +364,22 @@
               "title": "Po Number"
             },
             "description": "Filter by PO number (e.g. PO-501)"
+          },
+          {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
           },
           {
             "name": "X-Tenant-ID",
@@ -460,6 +524,22 @@
             }
           },
           {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
             "name": "X-Tenant-ID",
             "in": "header",
             "required": false,
@@ -518,6 +598,40 @@
               "type": "string",
               "title": "Task Id"
             }
+          },
+          {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
           }
         ],
         "responses": {
@@ -562,6 +676,22 @@
             }
           },
           {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
             "name": "Idempotency-Key",
             "in": "header",
             "required": false,
@@ -576,14 +706,57 @@
               ],
               "title": "Idempotency-Key"
             }
+          },
+          {
+            "name": "X-User-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Actor / User Identifier",
+              "title": "X-User-Id"
+            },
+            "description": "Actor / User Identifier"
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
           }
         ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AcknowledgeRequest"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AcknowledgeRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
               }
             }
           }
@@ -630,6 +803,22 @@
             }
           },
           {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
             "name": "Idempotency-Key",
             "in": "header",
             "required": false,
@@ -644,14 +833,57 @@
               ],
               "title": "Idempotency-Key"
             }
+          },
+          {
+            "name": "X-User-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Actor / User Identifier",
+              "title": "X-User-Id"
+            },
+            "description": "Actor / User Identifier"
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
           }
         ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StartRequest"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/StartRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
               }
             }
           }
@@ -698,6 +930,22 @@
             }
           },
           {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
             "name": "Idempotency-Key",
             "in": "header",
             "required": false,
@@ -712,6 +960,42 @@
               ],
               "title": "Idempotency-Key"
             }
+          },
+          {
+            "name": "X-User-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Actor / User Identifier",
+              "title": "X-User-Id"
+            },
+            "description": "Actor / User Identifier"
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
           }
         ],
         "requestBody": {
@@ -766,6 +1050,22 @@
             }
           },
           {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
             "name": "Idempotency-Key",
             "in": "header",
             "required": false,
@@ -780,14 +1080,57 @@
               ],
               "title": "Idempotency-Key"
             }
+          },
+          {
+            "name": "X-User-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Actor / User Identifier",
+              "title": "X-User-Id"
+            },
+            "description": "Actor / User Identifier"
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
           }
         ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SubmitForVerificationRequest"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SubmitForVerificationRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
               }
             }
           }
@@ -834,6 +1177,22 @@
             }
           },
           {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
             "name": "Idempotency-Key",
             "in": "header",
             "required": false,
@@ -848,14 +1207,57 @@
               ],
               "title": "Idempotency-Key"
             }
+          },
+          {
+            "name": "X-User-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Actor / User Identifier",
+              "title": "X-User-Id"
+            },
+            "description": "Actor / User Identifier"
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
           }
         ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/VerifyRequest"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/VerifyRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
               }
             }
           }
@@ -900,6 +1302,58 @@
               "type": "string",
               "title": "Task Id"
             }
+          },
+          {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
+            "name": "X-User-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Actor / User Identifier",
+              "title": "X-User-Id"
+            },
+            "description": "Actor / User Identifier"
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
           }
         ],
         "requestBody": {
@@ -936,14 +1390,14 @@
         }
       }
     },
-    "/api/v1/tasks/{task_id}/reassign": {
+    "/api/v1/tasks/{task_id}/assign": {
       "post": {
         "tags": [
           "Tasks & Workflow"
         ],
-        "summary": "Reassign task to a different employee",
-        "description": "Permitted from ASSIGNED, ACKNOWLEDGED, or IN_PROGRESS states.",
-        "operationId": "reassign_task_api_v1_tasks__task_id__reassign_post",
+        "summary": "Assign a task (CREATED -> ASSIGNED)",
+        "description": "Assigns a task currently in CREATED status to an eligible employee.",
+        "operationId": "assign_task_api_v1_tasks__task_id__assign_post",
         "parameters": [
           {
             "name": "task_id",
@@ -952,6 +1406,22 @@
             "schema": {
               "type": "string",
               "title": "Task Id"
+            }
+          },
+          {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
             }
           },
           {
@@ -969,6 +1439,163 @@
               ],
               "title": "Idempotency-Key"
             }
+          },
+          {
+            "name": "X-User-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Actor / User Identifier",
+              "title": "X-User-Id"
+            },
+            "description": "Actor / User Identifier"
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HumanTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/reassign": {
+      "post": {
+        "tags": [
+          "Tasks & Workflow"
+        ],
+        "summary": "Reassign task to a different employee",
+        "description": "Permitted from ASSIGNED, ACKNOWLEDGED, or IN_PROGRESS states (and CREATED).",
+        "operationId": "reassign_task_api_v1_tasks__task_id__reassign_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "X-User-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Actor / User Identifier",
+              "title": "X-User-Id"
+            },
+            "description": "Actor / User Identifier"
+          },
+          {
+            "name": "X-Tenant-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Tenant Identifier",
+              "title": "X-Tenant-Id"
+            },
+            "description": "Tenant Identifier"
           }
         ],
         "requestBody": {
@@ -1060,6 +1687,22 @@
             "description": "Optional model override for OpenRouter (e.g. 'anthropic/claude-3.5-sonnet')"
           },
           {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
             "name": "X-Tenant-ID",
             "in": "header",
             "required": false,
@@ -1127,18 +1770,44 @@
     "schemas": {
       "AcknowledgeRequest": {
         "properties": {
-          "actor_id": {
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes",
+            "description": "Optional acknowledgement notes"
+          }
+        },
+        "type": "object",
+        "title": "AcknowledgeRequest",
+        "description": "Request body for POST /tasks/{id}/acknowledge."
+      },
+      "AssignRequest": {
+        "properties": {
+          "assignee_id": {
             "type": "string",
-            "title": "Actor Id",
-            "description": "Employee ID performing the acknowledgement"
+            "title": "Assignee Id",
+            "description": "Employee ID of the assignee"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Reason",
+            "description": "Mandatory reason for assignment"
           }
         },
         "type": "object",
         "required": [
-          "actor_id"
+          "assignee_id",
+          "reason"
         ],
-        "title": "AcknowledgeRequest",
-        "description": "Request body for POST /tasks/{id}/acknowledge."
+        "title": "AssignRequest",
+        "description": "Request body for POST /tasks/{id}/assign."
       },
       "CanonicalGoodsReceiptLineSummary": {
         "properties": {
@@ -1257,25 +1926,15 @@
       },
       "CompleteRequest": {
         "properties": {
-          "actor_id": {
-            "type": "string",
-            "title": "Actor Id",
-            "description": "Employee ID completing the task"
-          },
           "resolution_code": {
             "type": "string",
+            "minLength": 1,
             "title": "Resolution Code",
             "description": "Resolution code (e.g. SUPPLIER_SHORT_SHIPMENT_CONFIRMED, GOODS_FOUND_IN_TRANSIT)"
           },
           "resolution_evidence_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
+            "minLength": 1,
             "title": "Resolution Evidence Ref",
             "description": "Reference to supporting evidence document or system record"
           },
@@ -1294,8 +1953,8 @@
         },
         "type": "object",
         "required": [
-          "actor_id",
-          "resolution_code"
+          "resolution_code",
+          "resolution_evidence_ref"
         ],
         "title": "CompleteRequest",
         "description": "Request body for POST /tasks/{id}/complete."
@@ -1335,6 +1994,18 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
           }
         },
         "type": "object",
@@ -1969,6 +2640,22 @@
             "type": "string",
             "title": "Rule Version"
           },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 1
+          },
+          "mapping_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mapping Version"
+          },
           "evidence_records": {
             "items": {
               "type": "string"
@@ -2126,6 +2813,22 @@
             "type": "string",
             "title": "Rule Version"
           },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 1
+          },
+          "mapping_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mapping Version"
+          },
           "evidence_records": {
             "items": {
               "type": "string"
@@ -2199,11 +2902,6 @@
       },
       "ReassignRequest": {
         "properties": {
-          "actor_id": {
-            "type": "string",
-            "title": "Actor Id",
-            "description": "Employee ID performing the reassignment"
-          },
           "new_assignee_id": {
             "type": "string",
             "title": "New Assignee Id",
@@ -2218,7 +2916,6 @@
         },
         "type": "object",
         "required": [
-          "actor_id",
           "new_assignee_id",
           "reason"
         ],
@@ -2291,11 +2988,6 @@
       },
       "ReopenRequest": {
         "properties": {
-          "actor_id": {
-            "type": "string",
-            "title": "Actor Id",
-            "description": "Employee or manager reopening the task"
-          },
           "reason": {
             "type": "string",
             "minLength": 1,
@@ -2305,7 +2997,6 @@
         },
         "type": "object",
         "required": [
-          "actor_id",
           "reason"
         ],
         "title": "ReopenRequest",
@@ -2313,31 +3004,39 @@
       },
       "StartRequest": {
         "properties": {
-          "actor_id": {
-            "type": "string",
-            "title": "Actor Id",
-            "description": "Employee ID starting investigation"
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes",
+            "description": "Optional notes on starting investigation"
           }
         },
         "type": "object",
-        "required": [
-          "actor_id"
-        ],
         "title": "StartRequest",
         "description": "Request body for POST /tasks/{id}/start."
       },
       "SubmitForVerificationRequest": {
         "properties": {
-          "actor_id": {
-            "type": "string",
-            "title": "Actor Id",
-            "description": "Employee submitting task for manager verification"
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes",
+            "description": "Optional submission notes"
           }
         },
         "type": "object",
-        "required": [
-          "actor_id"
-        ],
         "title": "SubmitForVerificationRequest",
         "description": "Request body for POST /tasks/{id}/submit-verification."
       },
@@ -2479,11 +3178,6 @@
       },
       "VerifyRequest": {
         "properties": {
-          "actor_id": {
-            "type": "string",
-            "title": "Actor Id",
-            "description": "Manager or system ID performing verification"
-          },
           "notes": {
             "anyOf": [
               {
@@ -2498,9 +3192,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "actor_id"
-        ],
         "title": "VerifyRequest",
         "description": "Request body for POST /tasks/{id}/verify."
       }
