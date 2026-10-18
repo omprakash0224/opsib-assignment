@@ -181,7 +181,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 - Interactive OpenAPI Docs (Swagger UI): `http://localhost:8000/docs`
 - ReDoc UI: `http://localhost:8000/redoc`
-- Health Endpoint: `http://localhost:8000/health`
+- Health Endpoint: `http://localhost:8000/`
 
 ### Step 6: (Optional) Running with PostgreSQL via Docker Compose
 Per ADR-8, the system is dual-database compatible (SQLite WAL by default, PostgreSQL ready). To run against a live PostgreSQL 16 container:
