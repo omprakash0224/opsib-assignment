@@ -20,8 +20,11 @@ from app.ingestion.service import IngestionService
 from app.detection.service import DetectionService, ReconciliationRunResult
 from app.detection.detector import ReconciliationDetector
 from app.detection.rules import build_exception_key, compute_variance
-from app.db.models.exception import OperationalException
-from app.config import DEFAULT_TENANT_ID
+from app.db.models.exception import OperationalException, ExceptionEvent, DataQualityIssue
+from app.db.models.task import HumanTask
+from app.db.models.audit import TaskAuditEvent
+from app.workflows import task_service
+from app.config import DEFAULT_TENANT_ID, get_current_time
 
 WORKSPACE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -495,3 +498,315 @@ class TestReconciliationAPI:
         """GET /exceptions/{nonexistent_id} should return 404."""
         resp = client.get("/api/v1/exceptions/00000000-0000-0000-0000-000000000000")
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Bug 5 Tests: Late-Arriving Data Re-Evaluates Exceptions (FIX.md §5)
+# ---------------------------------------------------------------------------
+
+class TestBug5LateArrivingDataReevaluatesExceptions:
+    """
+    Bug 5 tests per FIX.md:
+    - Late receipt that clears shortfall: exception auto-closes, task cancelled, audit trail present.
+    - Late receipt that only partly clears it: quantities and evidence updated, revision bumped, no duplicate exception or task.
+    - Re-run with no changes: no revision bump (idempotent).
+    - Deadline == frozen time boundary test.
+    - Resolved exception does not silently reopen on quantity change; suggests reopen for human review.
+    - Fresh session API test (multi-session).
+    """
+
+    def test_late_receipt_clears_shortfall_auto_closes_exception_and_cancels_task(
+        self, db_session: Session
+    ):
+        load_all_fixtures(db_session)
+        recon1 = DetectionService.run_reconciliation(session=db_session)
+        assert recon1.shortfalls_detected == 3
+
+        exc = get_exception_for_po(db_session, "PO-501")
+        assert exc is not None
+        assert exc.status == "DETECTED"
+        assert exc.variance_qty_base == pytest.approx(8.0)
+        assert exc.revision == 1
+
+        # Provision task for PO-501
+        task = task_service.create_task_for_exception(session=db_session, exception=exc)
+        assert task.status == "ASSIGNED"
+
+        # Late receipt arrives covering the 8 EA shortfall
+        late_receipt_csv = (
+            "source_record_id,receipt_number,receipt_line,po_number,po_line_number,location_code,product_ref,accepted_qty,uom,received_at,posting_status\n"
+            "WMS-GRN501-C-L1,GRN-501-C,1,PO-501,1,WH-MH-014,WMS-BRC-001,8,EA,2026-10-16T14:50:00+05:30,POSTED\n"
+        )
+        IngestionService.ingest_csv(db_session, "goods_receipt_lines", late_receipt_csv)
+
+        # Re-run reconciliation
+        DetectionService.run_reconciliation(session=db_session)
+
+        # Assert exception is AUTO_CLOSED with variance 0 and revision bumped
+        db_session.refresh(exc)
+        assert exc.status == "AUTO_CLOSED"
+        assert exc.received_qty_base == pytest.approx(100.0)
+        assert exc.variance_qty_base == pytest.approx(0.0)
+        assert exc.resolution_notes == "Shortfall cleared by late receipt"
+        assert exc.resolved_at is not None
+        assert exc.revision == 2
+
+        # Assert task is CANCELLED_NO_LONGER_NEEDED
+        db_session.refresh(task)
+        assert task.status == "CANCELLED_NO_LONGER_NEEDED"
+
+        # Assert task audit trail has cancellation event
+        cancellation_audit = (
+            db_session.query(TaskAuditEvent)
+            .filter_by(task_id=task.id, event_type="CANCELLED")
+            .first()
+        )
+        assert cancellation_audit is not None
+        assert cancellation_audit.to_status == "CANCELLED_NO_LONGER_NEEDED"
+        assert "Shortfall cleared by late receipt" in cancellation_audit.reason
+
+        # Assert exception events has AUTO_CLOSED event
+        event = (
+            db_session.query(ExceptionEvent)
+            .filter_by(exception_id=exc.id, event_type="AUTO_CLOSED")
+            .first()
+        )
+        assert event is not None
+        assert event.new_state["status"] == "AUTO_CLOSED"
+
+    def test_late_receipt_partly_clears_shortfall_updates_quantities_and_bumps_revision(
+        self, db_session: Session
+    ):
+        load_all_fixtures(db_session)
+        DetectionService.run_reconciliation(session=db_session)
+
+        exc = get_exception_for_po(db_session, "PO-501")
+        assert exc is not None
+        assert exc.revision == 1
+        initial_exc_id = exc.id
+
+        task = task_service.create_task_for_exception(session=db_session, exception=exc)
+        assert task.status == "ASSIGNED"
+
+        # Late receipt arrives covering 4 EA out of 8 EA shortfall
+        late_receipt_csv = (
+            "source_record_id,receipt_number,receipt_line,po_number,po_line_number,location_code,product_ref,accepted_qty,uom,received_at,posting_status\n"
+            "WMS-GRN501-C-L1,GRN-501-C,1,PO-501,1,WH-MH-014,WMS-BRC-001,4,EA,2026-10-16T14:50:00+05:30,POSTED\n"
+        )
+        IngestionService.ingest_csv(db_session, "goods_receipt_lines", late_receipt_csv)
+
+        # Re-run reconciliation
+        DetectionService.run_reconciliation(session=db_session)
+
+        db_session.refresh(exc)
+        assert exc.id == initial_exc_id
+        assert exc.status == "DETECTED"
+        assert exc.received_qty_base == pytest.approx(96.0)
+        assert exc.variance_qty_base == pytest.approx(4.0)
+        assert exc.revision == 2
+        assert "WMS-GRN501-C-L1" in exc.evidence_records
+
+        # Ensure no duplicate exception or task
+        assert db_session.query(OperationalException).filter_by(po_number="PO-501").count() == 1
+        assert db_session.query(HumanTask).filter_by(exception_id=exc.id).count() == 1
+
+        # Assert exception event logged
+        event = (
+            db_session.query(ExceptionEvent)
+            .filter_by(exception_id=exc.id, event_type="QUANTITY_UPDATED")
+            .first()
+        )
+        assert event is not None
+        assert event.previous_state["received_qty_base"] == pytest.approx(92.0)
+        assert event.new_state["received_qty_base"] == pytest.approx(96.0)
+
+    def test_rerun_with_no_changes_is_idempotent_no_revision_bump(
+        self, db_session: Session
+    ):
+        load_all_fixtures(db_session)
+        DetectionService.run_reconciliation(session=db_session)
+
+        # Add partial receipt and update
+        late_receipt_csv = (
+            "source_record_id,receipt_number,receipt_line,po_number,po_line_number,location_code,product_ref,accepted_qty,uom,received_at,posting_status\n"
+            "WMS-GRN501-C-L1,GRN-501-C,1,PO-501,1,WH-MH-014,WMS-BRC-001,4,EA,2026-10-16T14:50:00+05:30,POSTED\n"
+        )
+        IngestionService.ingest_csv(db_session, "goods_receipt_lines", late_receipt_csv)
+        DetectionService.run_reconciliation(session=db_session)
+
+        exc = get_exception_for_po(db_session, "PO-501")
+        assert exc.revision == 2
+
+        # Re-run immediately without any new data
+        events_count_before = db_session.query(ExceptionEvent).filter_by(exception_id=exc.id).count()
+        DetectionService.run_reconciliation(session=db_session)
+        db_session.refresh(exc)
+
+        assert exc.revision == 2, "Revision must not bump when data has not changed"
+        events_count_after = db_session.query(ExceptionEvent).filter_by(exception_id=exc.id).count()
+        assert events_count_after == events_count_before, "No new events should be created on idempotent run"
+
+    def test_deadline_equals_frozen_time_boundary_is_actionable(
+        self, db_session: Session
+    ):
+        from datetime import datetime, timedelta
+        from app.config import get_current_time, KOLKATA_TZ
+        from app.db.models.canonical import PurchaseOrderLine
+
+        # Ingest aliases and required setup
+        IngestionService.ingest_csv(db_session, "product_aliases", read_fixture("product_aliases.csv"))
+        IngestionService.ingest_csv(db_session, "location_aliases", read_fixture("location_aliases.csv"))
+
+        frozen = get_current_time()
+
+        # PO with deadline EXACTLY equal to frozen time -> actionable (not skipped)
+        po_exact = PurchaseOrderLine(
+            tenant_id="TENANT-001",
+            source_system="ERP",
+            source_record_id="ERP-PO-EXACT-L1",
+            po_number="PO-EXACT",
+            line_number=1,
+            supplier_code="SUP-TEST",
+            canonical_location_id="STORE-014",
+            raw_location_code="WH-MUM-01",
+            canonical_product_id="SKU-CHAIR-01",
+            raw_item_code="SKU-CHAIR-01",
+            ordered_qty_source=10.0,
+            ordered_uom_source="EA",
+            ordered_qty_base=10.0,
+            base_uom="EA",
+            status="OPEN",
+            expected_receipt_by=frozen,
+        )
+        # PO with deadline 1 second into future -> not actionable (skipped)
+        po_future = PurchaseOrderLine(
+            tenant_id="TENANT-001",
+            source_system="ERP",
+            source_record_id="ERP-PO-FUT-L1",
+            po_number="PO-FUT",
+            line_number=1,
+            supplier_code="SUP-TEST",
+            canonical_location_id="STORE-014",
+            raw_location_code="WH-MUM-01",
+            canonical_product_id="SKU-CHAIR-01",
+            raw_item_code="SKU-CHAIR-01",
+            ordered_qty_source=10.0,
+            ordered_uom_source="EA",
+            ordered_qty_base=10.0,
+            base_uom="EA",
+            status="OPEN",
+            expected_receipt_by=frozen + timedelta(seconds=1),
+        )
+        db_session.add_all([po_exact, po_future])
+        db_session.commit()
+
+        result = DetectionService.run_reconciliation(session=db_session)
+        exc_exact = get_exception_for_po(db_session, "PO-EXACT")
+        exc_future = get_exception_for_po(db_session, "PO-FUT")
+
+        assert exc_exact is not None, "Boundary deadline == frozen time must be actionable"
+        assert exc_exact.variance_qty_base == pytest.approx(10.0)
+        assert exc_future is None, "Deadline > frozen time must be skipped as future deadline"
+
+    def test_exception_already_resolved_or_dismissed_does_not_silently_reopen_on_quantity_change(
+        self, db_session: Session
+    ):
+        load_all_fixtures(db_session)
+        DetectionService.run_reconciliation(session=db_session)
+
+        exc = get_exception_for_po(db_session, "PO-501")
+        assert exc is not None
+        # Mark exception as RESOLVED
+        exc.status = "RESOLVED"
+        exc.resolution_notes = "Manually verified and resolved"
+        db_session.commit()
+
+        # Late receipt arrives changing numbers
+        late_receipt_csv = (
+            "source_record_id,receipt_number,receipt_line,po_number,po_line_number,location_code,product_ref,accepted_qty,uom,received_at,posting_status\n"
+            "WMS-GRN501-C-L1,GRN-501-C,1,PO-501,1,WH-MH-014,WMS-BRC-001,4,EA,2026-10-16T14:50:00+05:30,POSTED\n"
+        )
+        IngestionService.ingest_csv(db_session, "goods_receipt_lines", late_receipt_csv)
+
+        DetectionService.run_reconciliation(session=db_session)
+        db_session.refresh(exc)
+
+        # Must not silently reopen
+        assert exc.status == "RESOLVED"
+
+        # Reopen suggested event and DQ issue should be created
+        event = (
+            db_session.query(ExceptionEvent)
+            .filter_by(exception_id=exc.id, event_type="REOPEN_SUGGESTED")
+            .first()
+        )
+        assert event is not None
+
+        dq_issue = (
+            db_session.query(DataQualityIssue)
+            .filter_by(source_record_id=exc.exception_key, issue_type="REOPEN_SUGGESTED")
+            .first()
+        )
+        assert dq_issue is not None
+
+    def test_fresh_session_api_late_receipt_auto_closes_exception_and_cancels_task(
+        self, fresh_client
+    ):
+        # Ingest all fixtures
+        for dataset in [
+            "product_aliases",
+            "location_aliases",
+            "employees",
+            "workforce_status",
+            "purchase_order_lines",
+            "goods_receipt_lines",
+        ]:
+            resp = fresh_client.post(
+                f"/api/v1/imports/{dataset}",
+                content=read_fixture(f"{dataset}.csv"),
+                headers={"Content-Type": "text/csv"},
+            )
+            assert resp.status_code == 201
+
+        # Trigger reconciliation
+        recon_resp = fresh_client.post("/api/v1/reconciliation/run")
+        assert recon_resp.status_code == 200
+
+        # Retrieve PO-501 exception and task
+        exc_list = fresh_client.get("/api/v1/exceptions?po_number=PO-501").json()
+        assert exc_list["total"] == 1
+        exc_id = exc_list["items"][0]["id"]
+        assert exc_list["items"][0]["status"] == "DETECTED"
+        assert exc_list["items"][0]["variance_qty_base"] == pytest.approx(8.0)
+
+        tasks = fresh_client.get("/api/v1/tasks?canonical_location_id=STORE-014").json()
+        task_501 = next(t for t in tasks["items"] if t["exception_id"] == exc_id)
+        assert task_501["status"] == "ASSIGNED"
+
+        # Import late receipt covering the remaining 8 EA
+        late_receipt_csv = (
+            "source_record_id,receipt_number,receipt_line,po_number,po_line_number,location_code,product_ref,accepted_qty,uom,received_at,posting_status\n"
+            "WMS-GRN501-C-L1,GRN-501-C,1,PO-501,1,WH-MH-014,WMS-BRC-001,8,EA,2026-10-16T14:50:00+05:30,POSTED\n"
+        )
+        import_resp = fresh_client.post(
+            "/api/v1/imports/goods_receipt_lines",
+            content=late_receipt_csv,
+            headers={"Content-Type": "text/csv"},
+        )
+        assert import_resp.status_code == 201
+
+        # Re-run reconciliation
+        recon_resp2 = fresh_client.post("/api/v1/reconciliation/run")
+        assert recon_resp2.status_code == 200
+
+        # Check in a fresh session: exception is AUTO_CLOSED
+        exc_detail = fresh_client.get(f"/api/v1/exceptions/{exc_id}").json()
+        assert exc_detail["status"] == "AUTO_CLOSED"
+        assert exc_detail["variance_qty_base"] == pytest.approx(0.0)
+        assert exc_detail["received_qty_base"] == pytest.approx(100.0)
+        assert exc_detail["revision"] == 2
+
+        # Check in a fresh session: task is CANCELLED_NO_LONGER_NEEDED
+        task_detail = fresh_client.get(f"/api/v1/tasks/{task_501['id']}").json()
+        assert task_detail["status"] == "CANCELLED_NO_LONGER_NEEDED"
+

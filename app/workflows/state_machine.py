@@ -35,14 +35,15 @@ from app.core.logging import logger
 # Maps each status to the set of statuses it may legally transition to.
 
 ALLOWED_TRANSITIONS: dict[str, list[str]] = {
-    "CREATED":               ["ASSIGNED"],
-    "ASSIGNED":              ["ACKNOWLEDGED", "ASSIGNED"],  # ASSIGNED->ASSIGNED for reassign
-    "ACKNOWLEDGED":          ["IN_PROGRESS", "ASSIGNED"],
-    "IN_PROGRESS":           ["COMPLETED", "BLOCKED", "ASSIGNED"],
-    "BLOCKED":               ["IN_PROGRESS"],
-    "COMPLETED":             ["PENDING_VERIFICATION"],
-    "PENDING_VERIFICATION":  ["VERIFIED", "REOPENED"],
-    "REOPENED":              ["IN_PROGRESS"],
+    "CREATED":               ["ASSIGNED", "CANCELLED_NO_LONGER_NEEDED"],
+    "ASSIGNED":              ["ACKNOWLEDGED", "ASSIGNED", "CANCELLED_NO_LONGER_NEEDED"],  # ASSIGNED->ASSIGNED for reassign
+    "ACKNOWLEDGED":          ["IN_PROGRESS", "ASSIGNED", "CANCELLED_NO_LONGER_NEEDED"],
+    "IN_PROGRESS":           ["COMPLETED", "BLOCKED", "ASSIGNED", "CANCELLED_NO_LONGER_NEEDED"],
+    "BLOCKED":               ["IN_PROGRESS", "CANCELLED_NO_LONGER_NEEDED"],
+    "COMPLETED":             ["PENDING_VERIFICATION", "CANCELLED_NO_LONGER_NEEDED"],
+    "PENDING_VERIFICATION":  ["VERIFIED", "REOPENED", "CANCELLED_NO_LONGER_NEEDED"],
+    "REOPENED":              ["IN_PROGRESS", "CANCELLED_NO_LONGER_NEEDED"],
+    "CANCELLED_NO_LONGER_NEEDED": [],  # Terminal
     "VERIFIED":              [],   # Terminal
 }
 

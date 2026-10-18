@@ -26,6 +26,8 @@ class OperationalExceptionResponse(BaseModel):
     variance_qty_base: float
     base_uom: str
     rule_version: str
+    revision: int = 1
+    mapping_version: Optional[str] = None
     evidence_records: List[str]
     neutral_summary: str
     missing_evidence: List[str]

@@ -66,12 +66,14 @@ class TestStateMachine:
         all_states = {
             "CREATED", "ASSIGNED", "ACKNOWLEDGED", "IN_PROGRESS",
             "BLOCKED", "COMPLETED", "PENDING_VERIFICATION", "VERIFIED", "REOPENED",
+            "CANCELLED_NO_LONGER_NEEDED",
         }
         assert all_states == set(ALLOWED_TRANSITIONS.keys())
 
     def test_verified_is_terminal_no_transitions(self):
-        """VERIFIED is a terminal state; no outgoing transitions allowed."""
+        """VERIFIED and CANCELLED_NO_LONGER_NEEDED are terminal states; no outgoing transitions allowed."""
         assert ALLOWED_TRANSITIONS["VERIFIED"] == []
+        assert ALLOWED_TRANSITIONS["CANCELLED_NO_LONGER_NEEDED"] == []
 
     def test_legal_transition_does_not_raise(self):
         """assert_transition must not raise for a permitted pair."""

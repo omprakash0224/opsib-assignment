@@ -46,6 +46,8 @@ def _orm_to_response(exc: OperationalException) -> OperationalExceptionResponse:
         variance_qty_base=exc.variance_qty_base,
         base_uom=exc.base_uom,
         rule_version=exc.rule_version,
+        revision=getattr(exc, "revision", 1),
+        mapping_version=getattr(exc, "mapping_version", None),
         evidence_records=exc.evidence_records or [],
         neutral_summary=exc.neutral_summary,
         missing_evidence=exc.missing_evidence or [],

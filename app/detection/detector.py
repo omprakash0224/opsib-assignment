@@ -174,6 +174,10 @@ class ReconciliationDetector:
 
         # --- Step 2: Deadline Filter ---
         # expected_receipt_by is timezone-aware; compare directly with evaluation_time.
+        # Boundary Rule: A PO line whose expected_receipt_by is exactly equal to the frozen
+        # evaluation time (expected_receipt_by == evaluation_time) has reached its deadline
+        # and IS actionable (<= evaluation_time). Only strictly future lines (> evaluation_time)
+        # are skipped as not yet actionable.
         # NOTE: SQLite may return naive datetimes even for tz-aware columns; normalize.
         receipt_deadline = _ensure_tz_aware(po_line.expected_receipt_by)
         if receipt_deadline > self._evaluation_time:

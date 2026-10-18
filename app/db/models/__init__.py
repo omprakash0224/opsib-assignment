@@ -11,7 +11,7 @@ from app.db.models.canonical import (
     Employee,
     WorkforceShift,
 )
-from app.db.models.exception import OperationalException, DataQualityIssue
+from app.db.models.exception import OperationalException, ExceptionEvent, DataQualityIssue
 from app.db.models.task import HumanTask
 from app.db.models.audit import TaskAuditEvent
 
@@ -26,6 +26,7 @@ __all__ = [
     "Employee",
     "WorkforceShift",
     "OperationalException",
+    "ExceptionEvent",
     "DataQualityIssue",
     "HumanTask",
     "TaskAuditEvent",

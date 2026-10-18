@@ -951,6 +951,70 @@ WHY IT WAS DONE:
   evidence, isolates cross-tenant task inspection, and ensures the append-only audit trail's actor_id is trustworthy.
 
 
+[2026-10-18 01:25:00 +05:30] - STEP 18: RESOLUTION OF BUG 5 (LATE-ARRIVING DATA RE-EVALUATES EXCEPTIONS)
+--------------------------------------------------------------------------------
+WHAT WAS DONE:
+1. Reproduced Bug 5 by writing failing tests in tests/test_reconciliation.py per FIX.md ground rules:
+   - Created TestBug5LateArrivingDataReevaluatesExceptions with 6 comprehensive test scenarios:
+     * test_late_receipt_clears_shortfall_auto_closes_exception_and_cancels_task: verified late receipt covering
+       remaining 8 EA shortfall transitions exception to AUTO_CLOSED (variance 0, revision 2) and linked open task
+       to CANCELLED_NO_LONGER_NEEDED with task audit event.
+       (Observed failure on unpatched code: exception remained DETECTED with stale variance=8.0 EA).
+     * test_late_receipt_partly_clears_shortfall_updates_quantities_and_bumps_revision: verified partial receipt
+       updates received_qty_base and variance_qty_base, updates evidence_records, bumps revision to 2, and produces
+       zero duplicate exceptions or tasks.
+       (Observed failure on unpatched code: numbers remained stale at 92 received, 8 variance).
+     * test_rerun_with_no_changes_is_idempotent_no_revision_bump: verified re-running reconciliation without incoming
+       data does not increment revision and generates no duplicate audit events.
+     * test_deadline_equals_frozen_time_boundary_is_actionable: verified explicit boundary condition where receipt
+       deadline exactly equal to frozen evaluation time (expected_receipt_by == evaluation_time) is actionable, while
+       expected_receipt_by > evaluation_time is skipped.
+     * test_exception_already_resolved_or_dismissed_does_not_silently_reopen_on_quantity_change: verified post-resolution
+       receipt data changes create an ExceptionEvent(REOPEN_SUGGESTED) and DataQualityIssue(REOPEN_SUGGESTED) without
+       silently mutating or reopening the RESOLVED exception.
+     * test_fresh_session_api_late_receipt_auto_closes_exception_and_cancels_task: executed full lifecycle via fresh_client
+       (multi-session HTTP), asserting GET /exceptions/{id} returns AUTO_CLOSED and GET /tasks/{id} returns
+       CANCELLED_NO_LONGER_NEEDED across independent database sessions.
+2. Updated Database Models & Schemas (app/db/models/exception.py, app/db/models/__init__.py, app/schemas/reconciliation_schemas.py):
+   - Added revision (Integer, default=1) and mapping_version (String, default="map-default") columns to OperationalException.
+   - Updated OperationalException.detected_at to default to get_current_time (frozen clock) for business logic consistency.
+   - Created ExceptionEvent model and table for immutable audit logging of exception state transitions (DETECTED,
+     QUANTITY_UPDATED, AUTO_CLOSED, REOPEN_SUGGESTED, RESOLVED).
+   - Exported ExceptionEvent in models package and added revision / mapping_version to OperationalExceptionResponse schema.
+3. Updated Task State Machine & Workflow Engine (app/workflows/state_machine.py, app/workflows/task_service.py):
+   - Added CANCELLED_NO_LONGER_NEEDED to ALLOWED_TRANSITIONS as a terminal state accessible from any active state.
+   - Implemented cancel_task_for_exception(): transitions linked active task to CANCELLED_NO_LONGER_NEEDED with
+     audit event recording reason="Shortfall cleared by late receipt".
+   - Updated create_task_for_exception(): uses get_current_time() for due_at; skips task provisioning if exception is
+     already in a closed status (AUTO_CLOSED, RESOLVED, DISMISSED).
+   - Updated _resolve_exception(): records an immutable ExceptionEvent(RESOLVED) upon manager task verification.
+4. Implemented Re-Evaluation & Mapping Fingerprint Engine (app/detection/service.py, app/detection/detector.py):
+   - Implemented compute_mapping_version(session): derives deterministic SHA-256 fingerprint from canonical ProductAlias
+     and LocationAlias crosswalk rows.
+   - Documented explicit deadline == frozen evaluation time boundary condition in ReconciliationDetector.
+   - Refactored DetectionService.run_reconciliation():
+     * Evaluates all findings returned by ReconciliationDetector against canonical DB state.
+     * _upsert_shortfall_exception(): detects quantity shifts on open exceptions, bumps revision, updates provenance,
+       and records ExceptionEvent(QUANTITY_UPDATED).
+     * _handle_satisfied_line(): detects when a previously short line is now satisfied (variance <= 0), auto-closes
+       exception to AUTO_CLOSED, and cancels linked open task to CANCELLED_NO_LONGER_NEEDED.
+     * _handle_cancelled_po_line(): auto-closes exceptions and cancels tasks if a PO line is cancelled.
+     * _record_reopen_suggested(): detects quantity changes on already RESOLVED/DISMISSED exceptions, creating idempotent
+       ExceptionEvent and DataQualityIssue records for human review.
+5. Documentation Updates (README.md):
+   - Documented Late-Arriving Data Re-evaluation Policy and Frozen Time Boundary Rule under Section 8 (Assumptions).
+   - Updated automated test suite section and test badge to 161 passed tests (100% pass rate).
+6. Executed Complete Verification Suite:
+   - Full pytest test suite: 161/161 PASSED across all 10 test modules in 8.63s.
+   - python scripts/run_verification.py: ALL 6 SCENARIOS & OPERATIONAL INVARIANTS PASSED.
+
+WHY IT WAS DONE:
+- Resolves Bug 5 from FIX.md: guarantees that reconciliation converges to the true canonical state upon receiving
+  late-arriving receipts or cancellations, keeping quantities, evidence, and revisions synchronized, auto-closing
+  satisfied exceptions and cancelling unneeded human tasks, while preventing silent reopening of already resolved issues.
+
+
+
 
 
 

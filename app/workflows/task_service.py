@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Callable, List, Optional
 from sqlalchemy.orm import Session
 
-from app.config import DEFAULT_TENANT_ID
+from app.config import DEFAULT_TENANT_ID, get_current_time
 from app.core.logging import logger
 from app.core.exceptions import (
     InvalidStateTransitionError,
@@ -80,6 +80,10 @@ def create_task_for_exception(
         logger.info(f"[TASK] Task already exists for exception {exception.id}: task={existing.id}")
         return existing
 
+    if exception.status in ("AUTO_CLOSED", "RESOLVED", "DISMISSED"):
+        logger.info(f"[TASK] Skipping task creation for closed exception {exception.id} (status={exception.status})")
+        return None
+
     # Route
     decision = RoutingPolicy.route(
         session=session,
@@ -87,7 +91,7 @@ def create_task_for_exception(
     )
 
     initial_status = "ASSIGNED" if decision.assignee_id else "CREATED"
-    due_at = datetime.now(timezone.utc) + timedelta(hours=DEFAULT_DUE_HOURS)
+    due_at = get_current_time() + timedelta(hours=DEFAULT_DUE_HOURS)
 
     task = HumanTask(
         tenant_id=tenant_id,
@@ -545,12 +549,57 @@ def _apply_transition(
         raise
 
 
+def cancel_task_for_exception(
+    session: Session,
+    exception_id: str,
+    reason: str = "Shortfall cleared by late receipt",
+    actor_id: str = "SYSTEM",
+) -> Optional[HumanTask]:
+    """
+    Cancel an open task linked to an exception whose shortfall has cleared.
+    Transitions task to CANCELLED_NO_LONGER_NEEDED and writes audit trail.
+    """
+    task = session.query(HumanTask).filter_by(exception_id=exception_id).first()
+    if not task:
+        return None
+    if task.status in ("CANCELLED_NO_LONGER_NEEDED", "VERIFIED"):
+        return task
+
+    prev_status = task.status
+    assert_transition(prev_status, "CANCELLED_NO_LONGER_NEEDED")
+    _stage_transition(
+        session=session,
+        task=task,
+        new_status="CANCELLED_NO_LONGER_NEEDED",
+        event_type="CANCELLED",
+        actor_id=actor_id,
+        from_status=prev_status,
+        reason=reason,
+        payload={"exception_id": exception_id, "reason": reason},
+    )
+    return task
+
+
 def _resolve_exception(session: Session, exception_id: str, actor_id: str) -> None:
     """Mark the linked OperationalException as RESOLVED when a task is VERIFIED."""
+    from app.db.models.exception import ExceptionEvent
     exc = session.query(OperationalException).filter_by(id=exception_id).first()
     if exc and exc.status not in ("RESOLVED", "DISMISSED"):
+        prev_status = exc.status
         exc.status = "RESOLVED"
         exc.resolved_at = datetime.now(timezone.utc)
         exc.resolution_notes = f"Resolved via task verification by {actor_id}"
+        session.flush()
+
+        evt = ExceptionEvent(
+            exception_id=exc.id,
+            event_type="RESOLVED",
+            previous_state={"status": prev_status, "revision": exc.revision},
+            new_state={"status": "RESOLVED", "revision": exc.revision},
+            actor_id=actor_id,
+            notes=f"Resolved via task verification by {actor_id}",
+            timestamp=datetime.now(timezone.utc),
+        )
+        session.add(evt)
         session.flush()
         logger.info(f"[TASK] Exception {exception_id} marked RESOLVED.")

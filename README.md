@@ -1,7 +1,7 @@
 # OPSIB Retail Exception Detection & Task Reliability Engine
 **Backend Engineering Assessment | Production Implementation**
 
-[![Test Suite](https://img.shields.io/badge/pytest-155%20passed%20(100%25)-brightgreen.svg)](#7-automated-test-suite--verification)
+[![Test Suite](https://img.shields.io/badge/pytest-161%20passed%20(100%25)-brightgreen.svg)](#7-automated-test-suite--verification)
 [![Rule Version](https://img.shields.io/badge/rule%20version-v1.0.0-blue.svg)](#2-system-architecture--design-principles)
 [![Evaluation Clock](https://img.shields.io/badge/frozen%20time-2026--10--16T15%3A00%3A00%2B05%3A30-orange.svg)](#2-system-architecture--design-principles)
 [![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](#3-quickstart--execution-guide)
@@ -424,48 +424,61 @@ curl -X POST "http://localhost:8000/api/v1/exceptions/857e9179-8ac4-405a-a011-4e
 
 ## 7. Automated Test Suite & Verification
 
-The project includes **155 automated tests** providing 100% scenario coverage, failure-path verification, and retry resilience:
+The project includes **161 automated tests** providing 100% scenario coverage, failure-path verification, and retry resilience:
 
 ```text
 ============================= test session starts =============================
 platform win32 -- Python 3.13.15, pytest-9.1.1, pluggy-1.7.0
 rootdir: D:\opsib-assignment
 plugins: anyio-4.15.1, asyncio-1.4.0
-collected 155 items
+collected 161 items
 
-tests\test_ai_boundary.py ................                               [ 10%]
+tests\test_ai_boundary.py ................                               [  9%]
 tests\test_api_v1.py ..............                                      [ 18%]
 tests\test_failure_paths.py ..............                               [ 27%]
 tests\test_idempotency.py ......                                         [ 31%]
-tests\test_ingestion.py ........                                         [ 36%]
+tests\test_ingestion.py ..........                                       [ 37%]
 tests\test_models.py ....                                                [ 39%]
-tests\test_reconciliation.py ........................                    [ 54%]
-tests\test_routing.py .............                                      [ 63%]
-tests\test_scenarios_e2e.py ....                                         [ 65%]
-tests\test_task_lifecycle.py ........................................... [ 93%]
+tests\test_reconciliation.py ..............................              [ 58%]
+tests\test_routing.py .............                                      [ 66%]
+tests\test_scenarios_e2e.py ....                                         [ 68%]
+tests\test_task_lifecycle.py ........................................... [ 95%]
 .......                                                                  [100%]
 
-======================= 155 passed, 4 warnings in 8.11s =======================
+======================= 161 passed, 4 warnings in 8.63s =======================
 ```
 
 ### Test Modules Breakdown
 
 | Test Module | Tests | Focus Area & Invariants Tested |
 | :--- | :--- | :--- |
-| [`test_reconciliation.py`](file:///d:/opsib-assignment/tests/test_reconciliation.py) | 24 | All 6 mandatory PO scenarios; zero tolerance; neutral summaries (ADR-6). |
+| [`test_reconciliation.py`](file:///d:/opsib-assignment/tests/test_reconciliation.py) | 30 | All 6 mandatory PO scenarios; zero tolerance; neutral summaries (ADR-6); Bug 5 late-arriving receipt re-evaluation, revision tracking, auto-close, task cancellation, and boundary tests. |
 | [`test_task_lifecycle.py`](file:///d:/opsib-assignment/tests/test_task_lifecycle.py) | 50 | State machine transitions; terminal states; illegal transition rejection; audit log sequence; resolution validation; assignment eligibility; Bug 4 actor identity & authorization matrix. |
 | [`test_routing.py`](file:///d:/opsib-assignment/tests/test_routing.py) | 13 | HRMS active gate overriding shift status (HR-103); off-shift filter (HR-101); store manager fallback (HR-401); regional role null location (HR-501). |
 | [`test_ai_boundary.py`](file:///d:/opsib-assignment/tests/test_ai_boundary.py) | 16 | OpenRouter client; mock provider; citation whitelist validation; hallucinated ID stripping; zero DB write verification. |
 | [`test_failure_paths.py`](file:///d:/opsib-assignment/tests/test_failure_paths.py) | 14 | Unmapped SKUs and locations isolated to `DataQualityIssue`; conflicting duplicate payload safety; corrupt rows; AI gateway timeout recovery. |
 | [`test_api_v1.py`](file:///d:/opsib-assignment/tests/test_api_v1.py) | 14 | JSON/CSV/multipart imports; batch inspection; task transition APIs; RFC 7807 error envelopes (404, 409, 422). |
 | [`test_idempotency.py`](file:///d:/opsib-assignment/tests/test_idempotency.py) | 6 | Design Q1 (double import produces zero duplicates); Design Q2 (client timeout retry returns 200 OK without duplicate audit events). |
-| [`test_ingestion.py`](file:///d:/opsib-assignment/tests/test_ingestion.py) | 8 | Intra-batch duplicate skips; BOX to EA unit conversion; crosswalk mapping. |
+| [`test_ingestion.py`](file:///d:/opsib-assignment/tests/test_ingestion.py) | 10 | Intra-batch duplicate skips; BOX to EA unit conversion; crosswalk mapping; Bug 2 recoverable rejected rows. |
 | [`test_scenarios_e2e.py`](file:///d:/opsib-assignment/tests/test_scenarios_e2e.py) | 4 | Multi-dataset end-to-end integration loading real CSV fixtures from disk. |
 | [`test_models.py`](file:///d:/opsib-assignment/tests/test_models.py) | 4 | Database models, foreign keys, frozen clock anchor, raw record uniqueness. |
 
 ---
 
 ## 8. Assumptions, Trade-offs & Production Hardening
+
+### Core Operational Assumptions
+
+1. **Late-Arriving Data Re-Evaluation Policy (ADR-4 & Bug 5 Fix):**
+   - **Still short, quantities changed:** Updates `received_qty_base`, `variance_qty_base`, `evidence_records`, `neutral_summary`, `mapping_version`, increments the `revision` counter, and appends an immutable `ExceptionEvent(QUANTITY_UPDATED)` record.
+   - **Variance cleared (0 or negative):** When late receipts cover the shortfall, sets exception status to `AUTO_CLOSED` (`resolution_notes="Shortfall cleared by late receipt"`), and automatically transitions any linked open task to terminal state `CANCELLED_NO_LONGER_NEEDED` with a corresponding `TaskAuditEvent(CANCELLED)` event.
+   - **Post-Resolution Quantity Changes:** If an exception is already `RESOLVED` or `DISMISSED` and subsequent data arrives altering the numbers, the system does **not** silently reopen the exception; instead, it logs an `ExceptionEvent(REOPEN_SUGGESTED)` and raises a `DataQualityIssue(REOPEN_SUGGESTED)` for supervisor/human operational review.
+   - **Idempotency & Mapping Provenance:** Re-running reconciliation without incoming receipt changes leaves the `revision` count unchanged. Every exception records both `rule_version` (`v1.0.0`) and `mapping_version` derived from a deterministic SHA-256 fingerprint of the alias tables.
+   - **Temporal Determinism:** Business logic timestamps (`detected_at`, `due_at`) evaluate deterministically against `get_current_time()` (`FROZEN_TIME`), while append-only audit logs record real-world wall-clock timestamps for auditing.
+
+2. **Frozen Time Boundary Rule:**
+   - A purchase order line whose receipt deadline is exactly equal to the frozen evaluation time (`expected_receipt_by == evaluation_time`) has reached its deadline and **is actionable** (`expected_receipt_by <= evaluation_time`).
+   - Only purchase order lines with deadlines strictly in the future (`expected_receipt_by > evaluation_time`) are excluded from shortfall evaluation.
 
 ### Assessment Scope Decisions
 To respect the 4–6 hour timebox and avoid fragile infrastructure, intentional simplifications were made:
