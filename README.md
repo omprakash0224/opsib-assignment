@@ -183,6 +183,45 @@ uvicorn app.main:app --reload --port 8000
 - ReDoc UI: `http://localhost:8000/redoc`
 - Health Endpoint: `http://localhost:8000/health`
 
+### Step 6: (Optional) Running with PostgreSQL via Docker Compose
+Per ADR-8, the system is dual-database compatible (SQLite WAL by default, PostgreSQL ready). To run against a live PostgreSQL 16 container:
+
+1. **Spin up the PostgreSQL container:**
+   ```bash
+   docker compose up -d
+   ```
+2. **Configure `DATABASE_URL`:**
+   Copy `.env.example` to `.env` or set the environment variable:
+   ```bash
+   # On Linux / macOS:
+   export DATABASE_URL="postgresql+psycopg2://postgres:postgres@localhost:5432/opsib"
+
+   # On Windows (PowerShell):
+   $env:DATABASE_URL="postgresql+psycopg2://postgres:postgres@localhost:5432/opsib"
+   ```
+3. **Ingest fixtures and execute reconciliation on PostgreSQL:**
+   ```bash
+   python scripts/load_fixtures.py
+   python scripts/run_reconciliation.py
+   ```
+4. **Run pytest against PostgreSQL:**
+   ```bash
+   # On Linux / macOS:
+   TEST_DATABASE_URL="postgresql+psycopg2://postgres:postgres@localhost:5432/opsib" pytest
+
+   # On Windows (PowerShell):
+   $env:TEST_DATABASE_URL="postgresql+psycopg2://postgres:postgres@localhost:5432/opsib"; pytest
+   ```
+5. **(Optional) Run full stack (Postgres + FastAPI) in Docker:**
+   ```bash
+   docker compose --profile app up --build -d
+   ```
+6. **Stop containers:**
+   ```bash
+   docker compose down       # Preserves database volume
+   docker compose down -v    # Resets database volume
+   ```
+
 ---
 
 ## 4. Mandatory Scenario Verification Matrix

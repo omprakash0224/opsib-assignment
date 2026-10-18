@@ -1,0 +1,62 @@
+version: "3.8"
+
+# ==============================================================================
+# OPSIB Retail Exception Engine - Docker Compose Configuration
+# ==============================================================================
+# Quick Start:
+#   1. Start PostgreSQL:
+#        docker compose up -d
+#   2. Run application locally against PostgreSQL:
+#        Copy DATABASE_URL from .env.example to .env
+#        DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/opsib
+#   3. (Optional) Run both PostgreSQL and FastAPI in containers:
+#        docker compose --profile app up --build -d
+#   4. Stop containers:
+#        docker compose down
+#   5. Stop containers and reset database volume:
+#        docker compose down -v
+# ==============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: opsib-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-opsib}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-opsib}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  app:
+    profiles: ["app", "full"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: opsib-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-opsib}
+      - DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID:-TENANT-001}
+      - RULE_VERSION=${RULE_VERSION:-v1.0.0}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - AI_PROVIDER=${AI_PROVIDER:-mock}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+    ports:
+      - "8000:8000"
+
+volumes:
+  postgres_data:
+    name: opsib_postgres_data

@@ -19,6 +19,8 @@ FROZEN_TIME = datetime(2026, 10, 16, 15, 0, 0, tzinfo=KOLKATA_TZ)
 # Database connection: SQLite WAL mode by default for zero-dependency local runs and tests,
 # or configurable PostgreSQL URI via environment variable.
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./opsib.db")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 DEFAULT_TENANT_ID = os.getenv("DEFAULT_TENANT_ID", "TENANT-001")
 RULE_VERSION = os.getenv("RULE_VERSION", "v1.0.0")

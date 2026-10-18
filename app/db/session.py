@@ -18,6 +18,7 @@ engine = create_engine(
     connect_args=connect_args,
     echo=False,
     future=True,
+    pool_pre_ping=True,
 )
 
 # Enable SQLite foreign keys and WAL journal mode

@@ -14,19 +14,28 @@ import app.db.models  # Ensure all models are loaded
 
 @pytest.fixture(scope="session")
 def engine():
-    """Creates a temporary SQLite test database."""
-    test_db_url = "sqlite:///:memory:"
+    """Creates a temporary test database (SQLite in-memory by default, or TEST_DATABASE_URL)."""
+    test_db_url = os.getenv("TEST_DATABASE_URL", "sqlite:///:memory:")
+    if test_db_url.startswith("postgres://"):
+        test_db_url = test_db_url.replace("postgres://", "postgresql://", 1)
+
+    connect_args = {}
+    if test_db_url.startswith("sqlite"):
+        connect_args = {"check_same_thread": False}
+
     test_engine = create_engine(
         test_db_url,
-        connect_args={"check_same_thread": False},
+        connect_args=connect_args,
         future=True,
+        pool_pre_ping=True,
     )
 
-    @event.listens_for(test_engine, "connect")
-    def set_sqlite_pragma(dbapi_connection, connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    if test_db_url.startswith("sqlite"):
+        @event.listens_for(test_engine, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
 
     Base.metadata.create_all(bind=test_engine)
     yield test_engine
